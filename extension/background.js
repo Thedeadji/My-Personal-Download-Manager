@@ -1,0 +1,200 @@
+// MyPersonalDownloadManager — browser integration (MV3 service worker)
+//
+// Downloads reach MPDM via:
+//   1. Right-click a link / page / media  ->  "Download with MyPersonalDownloadManager".
+//   2. (Optional) "Capture all browser downloads" — intercept normal downloads.
+//
+// Before anything is sent to the engine, an optional confirmation window shows
+// the filename + URL with Download / Cancel (and lets you tweak the filename and
+// connection count). It's on by default. Each confirmed job is dispatched
+// exactly once over a single native-messaging port; a set of in-flight URLs
+// blocks accidental duplicates.
+
+const HOST_NAME = "com.mypersonaldownloadmanager.host";
+const MENU_ROOT = "mpdm-download";
+
+const inFlight = new Set(); // URLs currently downloading
+
+// ---- helpers -------------------------------------------------------------
+
+async function getCookieHeader(url) {
+  try {
+    const cookies = await chrome.cookies.getAll({ url });
+    if (!cookies || cookies.length === 0) return "";
+    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  } catch (e) {
+    return "";
+  }
+}
+
+function filenameFromUrl(url) {
+  try {
+    const u = new URL(url);
+    return decodeURIComponent(u.pathname.split("/").filter(Boolean).pop() || "");
+  } catch (e) {
+    return "";
+  }
+}
+
+function notify(title, message) {
+  try {
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon48.png",
+      title,
+      message: String(message).slice(0, 300),
+    });
+  } catch (e) {
+    /* optional */
+  }
+}
+
+// ---- confirmation gate ---------------------------------------------------
+
+async function queueJob(job) {
+  job.id = job.id || crypto.randomUUID().slice(0, 12);
+  const { confirm } = await chrome.storage.local.get({ confirm: true });
+  if (!confirm) {
+    sendToHost(job);
+    return;
+  }
+  // Stash the pending job and open a small confirmation window.
+  const { pending } = await chrome.storage.local.get({ pending: {} });
+  pending[job.id] = job;
+  await chrome.storage.local.set({ pending });
+  chrome.windows.create({
+    url: chrome.runtime.getURL(`confirm.html?id=${job.id}`),
+    type: "popup",
+    width: 480,
+    height: 340,
+  });
+}
+
+// ---- single-dispatch job runner -----------------------------------------
+
+function runJob(job) {
+  if (inFlight.has(job.url)) return;
+  inFlight.add(job.url);
+
+  let port;
+  try {
+    port = chrome.runtime.connectNative(HOST_NAME);
+  } catch (e) {
+    inFlight.delete(job.url);
+    notify("MPDM error", "Could not reach the host. Run install_host.py. " + e);
+    return;
+  }
+
+  let settled = false;
+  const cleanup = () => {
+    inFlight.delete(job.url);
+    try { port.disconnect(); } catch (e) { /* gone */ }
+  };
+
+  port.onMessage.addListener((msg) => {
+    if (!msg) return;
+    if (msg.type === "accepted") notify("Download started", job.filename || job.url);
+    else if (msg.type === "done") { settled = true; notify("Download complete", msg.path || job.url); cleanup(); }
+    else if (msg.type === "error") { settled = true; notify("Download failed", msg.message || job.url); cleanup(); }
+  });
+  port.onDisconnect.addListener(() => {
+    const err = chrome.runtime.lastError;
+    if (!settled && err) notify("MPDM host not reachable", (err.message || "disconnected") + " — run install_host.py");
+    inFlight.delete(job.url);
+  });
+
+  try {
+    port.postMessage(job);
+  } catch (e) {
+    cleanup();
+    notify("MPDM error", String(e));
+  }
+}
+
+async function sendToHost(job) {
+  job.headers = job.headers || {};
+  const cookie = await getCookieHeader(job.url);
+  if (cookie) job.headers["Cookie"] = cookie;
+  if (!job.headers["User-Agent"]) job.headers["User-Agent"] = navigator.userAgent;
+  job.type = "download";
+  job.id = job.id || crypto.randomUUID().slice(0, 12);
+  runJob(job);
+}
+
+// ---- context menu --------------------------------------------------------
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: MENU_ROOT,
+    title: "Download with MyPersonalDownloadManager",
+    contexts: ["link", "image", "video", "audio", "page", "selection"],
+  });
+  chrome.storage.local.get({ intercept: false, confirm: true }, () => {});
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== MENU_ROOT) return;
+  const url = info.linkUrl || info.srcUrl || info.pageUrl;
+  if (!url) return;
+  await queueJob({
+    url,
+    filename: filenameFromUrl(url),
+    headers: { Referer: info.pageUrl || (tab && tab.url) || "" },
+  });
+});
+
+// ---- optional download interception --------------------------------------
+
+chrome.downloads.onCreated.addListener(async (item) => {
+  const { intercept } = await chrome.storage.local.get({ intercept: false });
+  if (!intercept) return;
+  if (!item.url || item.url.startsWith("blob:") || item.url.startsWith("data:")) return;
+
+  const url = item.finalUrl || item.url;
+  if (inFlight.has(url)) return;
+
+  try {
+    await chrome.downloads.cancel(item.id);
+    await chrome.downloads.erase({ id: item.id });
+  } catch (e) {
+    /* already done; fall through */
+  }
+  await queueJob({
+    url,
+    filename: item.filename ? item.filename.split(/[\\/]/).pop() : filenameFromUrl(url),
+    headers: { Referer: item.referrer || "" },
+  });
+});
+
+// ---- messaging (popup + confirm window) ----------------------------------
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg) return;
+  if (msg.type === "startDownload" && msg.job) {
+    sendToHost(msg.job);
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === "setIntercept") {
+    chrome.storage.local.set({ intercept: !!msg.value }, () => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === "getIntercept") {
+    chrome.storage.local.get({ intercept: false }, (d) => sendResponse(d));
+    return true;
+  }
+  if (msg.type === "setConfirm") {
+    chrome.storage.local.set({ confirm: !!msg.value }, () => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === "getConfirm") {
+    chrome.storage.local.get({ confirm: true }, (d) => sendResponse(d));
+    return true;
+  }
+  if (msg.type === "ping") {
+    chrome.runtime.sendNativeMessage(HOST_NAME, { type: "ping" }, (resp) => {
+      sendResponse({ ok: !chrome.runtime.lastError, resp, error: chrome.runtime.lastError?.message });
+    });
+    return true;
+  }
+});

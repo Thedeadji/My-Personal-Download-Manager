@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# MPDM runtime / output
+*.mpdm
+*.tmp
+mpdm_host.bat
+mpdm_host.sh
+_host_manifests/
+
+# OS
+.DS_Store
+Thumbs.db

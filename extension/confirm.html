@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Download with MyPersonalDownloadManager</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 13px/1.45 system-ui, sans-serif; margin: 0; padding: 16px; }
+      h1 { font-size: 14px; margin: 0 0 12px; }
+      label { display: block; margin: 10px 0 4px; opacity: 0.8; }
+      input[type="text"], input[type="number"] {
+        width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit;
+        border: 1px solid rgba(127,127,127,.4); border-radius: 6px; background: transparent;
+      }
+      .url { font-size: 12px; opacity: 0.6; word-break: break-all; margin: 2px 0 0; }
+      .row { display: flex; gap: 10px; }
+      .row > div { flex: 1; }
+      .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+      button { font: inherit; padding: 7px 16px; border-radius: 6px; cursor: pointer; border: 1px solid rgba(127,127,127,.4); background: transparent; }
+      button.primary { background: #148791; color: #fff; border-color: #148791; }
+    </style>
+  </head>
+  <body>
+    <h1>Download this file?</h1>
+    <label for="filename">Save as</label>
+    <input type="text" id="filename" />
+    <p class="url" id="url"></p>
+
+    <div class="row">
+      <div>
+        <label for="connections">Connections</label>
+        <input type="number" id="connections" min="1" max="32" value="8" />
+      </div>
+    </div>
+
+    <div class="btns">
+      <button id="cancel">Cancel</button>
+      <button id="download" class="primary">Download</button>
+    </div>
+
+    <script src="confirm.js"></script>
+  </body>
+</html>
