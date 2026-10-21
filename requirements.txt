@@ -1,1 +1,9 @@
 requests>=2.31
+
+# Optional: speeds up AES-128 encrypted-HLS decryption. Not required — MPDM
+# ships a built-in pure-Python AES-128 (mpdm/aes128.py) and uses it automatically
+# if neither of these is installed. Install one only if you grab large encrypted
+# HLS streams and want the faster native cipher:
+#   cryptography>=42
+# or:
+#   pycryptodome>=3.20

@@ -13,6 +13,9 @@ mpdm_host.bat
 mpdm_host.sh
 _host_manifests/
 
+# Local project context / handoff notes (not tracked)
+CLAUDE.md
+
 # OS
 .DS_Store
 Thumbs.db

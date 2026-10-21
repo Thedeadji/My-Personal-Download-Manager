@@ -5,9 +5,11 @@ playlist lists quality variants; each variant points to a *media* playlist that
 lists the actual segment URIs (often .ts or fragmented .mp4), plus an optional
 init segment (#EXT-X-MAP) and encryption info (#EXT-X-KEY).
 
-This parser is intentionally compact and covers the common cases. It is not a
-full HLS implementation — notably, full AES-128 segment decryption and
-SAMPLE-AES are left as clearly marked extension points.
+This parser is intentionally compact and covers the common cases, including
+AES-128 full-segment encryption (keys and IVs are tracked per segment, since a
+playlist may rotate keys via multiple #EXT-X-KEY tags). SAMPLE-AES — which
+encrypts only parts of each frame and needs container-aware handling — is left
+as a clearly marked extension point.
 """
 from __future__ import annotations
 
@@ -30,13 +32,34 @@ class Variant:
 
 
 @dataclass
+class SegmentKey:
+    """Encryption parameters that apply to one or more media segments."""
+    method: str = "NONE"               # "NONE", "AES-128", "SAMPLE-AES", ...
+    uri: Optional[str] = None          # absolute URI of the key bytes
+    iv: Optional[bytes] = None         # explicit 16-byte IV, or None (use seq)
+
+
+@dataclass
+class MediaSegment:
+    uri: str
+    seq: int = 0                       # media sequence number (for default IV)
+    key: Optional[SegmentKey] = None   # None / method "NONE" => unencrypted
+
+
+@dataclass
 class MediaPlaylist:
-    segments: list[str] = field(default_factory=list)
+    segments: list[str] = field(default_factory=list)       # URIs (back-compat)
+    seg_infos: list[MediaSegment] = field(default_factory=list)
     init_segment: Optional[str] = None
-    key_uri: Optional[str] = None
-    key_method: str = "NONE"
+    key_uri: Optional[str] = None      # first key seen (back-compat)
+    key_method: str = "NONE"           # "NONE" if no segment is encrypted
+    media_sequence: int = 0
     target_duration: float = 0.0
     is_endlist: bool = False
+
+    @property
+    def is_encrypted(self) -> bool:
+        return any(s.key and s.key.method not in ("NONE", "") for s in self.seg_infos)
 
 
 def _fetch_text(url: str, settings: Settings, session: requests.Session) -> str:
@@ -95,8 +118,22 @@ def parse_master(text: str, base_url: str) -> list[Variant]:
     return variants
 
 
+def _parse_iv(raw: str) -> Optional[bytes]:
+    """Parse an #EXT-X-KEY IV attribute (a 0x-prefixed 128-bit hex value)."""
+    raw = raw.strip()
+    if raw[:2].lower() == "0x":
+        raw = raw[2:]
+    try:
+        iv = bytes.fromhex(raw)
+    except ValueError:
+        return None
+    return iv.rjust(16, b"\x00")[-16:] if iv else None
+
+
 def parse_media(text: str, base_url: str) -> MediaPlaylist:
     pl = MediaPlaylist()
+    current_key: Optional[SegmentKey] = None   # applies to following segments
+    seq = 0
     for ln in text.splitlines():
         ln = ln.strip()
         if not ln:
@@ -106,20 +143,57 @@ def parse_media(text: str, base_url: str) -> MediaPlaylist:
                 pl.target_duration = float(ln.split(":", 1)[1])
             except (ValueError, IndexError):
                 pass
+        elif ln.startswith("#EXT-X-MEDIA-SEQUENCE"):
+            try:
+                pl.media_sequence = int(ln.split(":", 1)[1])
+                seq = pl.media_sequence
+            except (ValueError, IndexError):
+                pass
         elif ln.startswith("#EXT-X-MAP"):
             attrs = _parse_attributes(ln.split(":", 1)[1])
             if "URI" in attrs:
                 pl.init_segment = urljoin(base_url, attrs["URI"])
         elif ln.startswith("#EXT-X-KEY"):
             attrs = _parse_attributes(ln.split(":", 1)[1])
-            pl.key_method = attrs.get("METHOD", "NONE")
-            if "URI" in attrs:
-                pl.key_uri = urljoin(base_url, attrs["URI"])
+            method = attrs.get("METHOD", "NONE")
+            if method == "NONE":
+                current_key = None
+            else:
+                current_key = SegmentKey(
+                    method=method,
+                    uri=urljoin(base_url, attrs["URI"]) if "URI" in attrs else None,
+                    iv=_parse_iv(attrs["IV"]) if "IV" in attrs else None,
+                )
+                # Back-compat scalar fields: remember the first encrypting key.
+                if pl.key_method == "NONE":
+                    pl.key_method = method
+                    pl.key_uri = current_key.uri
         elif ln.startswith("#EXT-X-ENDLIST"):
             pl.is_endlist = True
         elif not ln.startswith("#"):
-            pl.segments.append(urljoin(base_url, ln))
+            seg_url = urljoin(base_url, ln)
+            pl.segments.append(seg_url)
+            pl.seg_infos.append(MediaSegment(uri=seg_url, seq=seq, key=current_key))
+            seq += 1
     return pl
+
+
+def fetch_key(uri: str, settings: Settings, session: requests.Session) -> bytes:
+    """Fetch a 16-byte AES-128 key from a key URI."""
+    r = session.get(uri, timeout=(settings.connect_timeout, settings.read_timeout),
+                    allow_redirects=True, verify=settings.verify_tls)
+    r.raise_for_status()
+    key = r.content
+    if len(key) != 16:
+        raise ValueError(f"AES-128 key at {uri} was {len(key)} bytes, expected 16")
+    return key
+
+
+def segment_iv(seg: MediaSegment) -> bytes:
+    """IV for a segment: the explicit key IV, or the media sequence number."""
+    if seg.key and seg.key.iv is not None:
+        return seg.key.iv
+    return seg.seq.to_bytes(16, "big")
 
 
 def resolve_media_playlist(url: str, settings: Settings,

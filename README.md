@@ -21,7 +21,9 @@ work internally.
   stream.
 - **Integrity check** — final file size is verified against `Content-Length`.
 - **HLS/DASH grabber** — parses `.m3u8` / `.mpd` manifests, downloads the
-  segments concurrently, and muxes them to MP4 via `ffmpeg`.
+  segments concurrently, and muxes them to MP4 via `ffmpeg`. **AES-128**
+  encrypted HLS is supported (keys/IVs tracked per segment, with key rotation),
+  using a built-in pure-Python AES — no extra dependency required.
 - **Three ways to use it** — a library API, a CLI, and a minimal Tkinter GUI.
 
 ## Install
@@ -158,8 +160,8 @@ python -m pytest tests/ -v      # or: python tests/test_engine.py
 
 ## Extending it (good next steps)
 
-- **Encrypted HLS**: fetch the `#EXT-X-KEY` key and AES-128-CBC decrypt each
-  segment before muxing (marked extension point in `hls.py` / `grabber.py`).
+- **SAMPLE-AES HLS**: the partial-encryption mode (AES-128 full-segment is
+  already supported); needs container-aware decryption — marked in `hls.py`.
 - **DASH SegmentList/SegmentBase**: handle the non-template manifest shapes
   (marked in `dash.py`).
 - **Per-download speed limiting** and a global scheduler/queue.
