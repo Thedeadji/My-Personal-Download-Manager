@@ -27,6 +27,7 @@ import requests
 from .config import Settings
 from .http_client import build_session, probe, open_range
 from .models import Segment, Status, Progress, RemoteInfo, TaskRecord
+from .ratelimit import RateLimiter
 from . import storage
 
 ProgressCb = Callable[[Progress], None]
@@ -61,12 +62,18 @@ class Download:
         dest_path: Optional[str] = None,
         progress_cb: Optional[ProgressCb] = None,
         headers: Optional[dict] = None,
+        global_limiter: Optional[RateLimiter] = None,
     ):
         self.url = url
         self.settings = settings or Settings()
         self.dest_path = dest_path
         self.progress_cb = progress_cb
         self.headers = headers or {}
+
+        # Per-download throttle (shared by this download's segment workers) plus
+        # an optional global throttle shared across all downloads.
+        self._limiter = RateLimiter(self.settings.max_rate_bps)
+        self._global_limiter = global_limiter
 
         self.info: Optional[RemoteInfo] = None
         self.segments: list[Segment] = []
@@ -88,7 +95,17 @@ class Download:
     def cancel(self):
         self._cancel.set()
 
+    def set_rate(self, rate_bps: float):
+        """Change this download's speed limit (bytes/sec, 0 = unlimited) live."""
+        self._limiter.set_rate(rate_bps)
+
     # ---- helpers ---------------------------------------------------------
+    def _throttle(self, nbytes: int):
+        """Block as needed to honor the per-download and global speed limits."""
+        self._limiter.consume(nbytes)
+        if self._global_limiter is not None:
+            self._global_limiter.consume(nbytes)
+
     @property
     def total_downloaded(self) -> int:
         return sum(s.downloaded for s in self.segments)
@@ -163,6 +180,7 @@ class Download:
                             f.write(chunk)
                             with self._lock:
                                 seg.downloaded += len(chunk)
+                            self._throttle(len(chunk))
                             self._emit()
                     resp.close()
                     if seg.complete:
@@ -205,6 +223,7 @@ class Download:
                             f.write(chunk)
                             with self._lock:
                                 seg.downloaded += len(chunk)
+                            self._throttle(len(chunk))
                             self._emit()
                 resp.close()
                 return

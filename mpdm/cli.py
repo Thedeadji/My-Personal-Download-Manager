@@ -59,11 +59,18 @@ def _progress_printer():
 
 
 def cmd_get(args) -> int:
+    from .ratelimit import parse_rate
     settings = Settings.from_env()
     if args.connections:
         settings.connections = args.connections
     if args.output_dir:
         settings.output_dir = args.output_dir
+    if args.limit:
+        try:
+            settings.max_rate_bps = parse_rate(args.limit)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 2
     cb = None if args.quiet else _progress_printer()
     dl = Download(args.url, settings=settings, dest_path=args.output, progress_cb=cb)
     t0 = time.time()
@@ -137,6 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("-o", "--output", help="output file path")
     g.add_argument("-d", "--output-dir", help="output directory")
     g.add_argument("-n", "--connections", type=int, help="number of parallel connections")
+    g.add_argument("-l", "--limit", help='speed limit, e.g. "500k", "1.5m" (0/omit = unlimited)')
     g.add_argument("-q", "--quiet", action="store_true")
     g.set_defaults(func=cmd_get)
 

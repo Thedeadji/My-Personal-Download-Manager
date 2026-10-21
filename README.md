@@ -19,6 +19,10 @@ work internally.
   reused when the server's size + `ETag` still match.
 - **Graceful fallback** — servers without range support get a single resumable
   stream.
+- **Speed limiting** — cap the rate per download or globally across all
+  downloads, adjustable while a download runs (token-bucket throttle).
+- **Scheduler** — start/pause the queue or change the global speed limit at set
+  times (daily windows or a one-shot), e.g. download only during off-peak hours.
 - **Integrity check** — final file size is verified against `Content-Length`.
 - **HLS/DASH grabber** — parses `.m3u8` / `.mpd` manifests, downloads the
   segments concurrently, and muxes them to MP4 via `ffmpeg`. **AES-128**
@@ -45,6 +49,9 @@ python -m mpdm get "https://example.com/big.zip" -n 8
 
 # Choose output path and directory
 python -m mpdm get "https://example.com/big.zip" -o "C:\Users\me\Downloads\big.zip"
+
+# Cap the download speed (per download). Accepts 500k, 1.5m, 2g, or raw bytes.
+python -m mpdm get "https://example.com/big.zip" -l 500k
 
 # Grab an HLS stream to MP4 (needs ffmpeg)
 python -m mpdm grab "https://example.com/playlist.m3u8" -o movie.mp4 --quality 720
@@ -164,7 +171,9 @@ python -m pytest tests/ -v      # or: python tests/test_engine.py
   already supported); needs container-aware decryption — marked in `hls.py`.
 - **DASH SegmentList/SegmentBase**: handle the non-template manifest shapes
   (marked in `dash.py`).
-- **Per-download speed limiting** and a global scheduler/queue.
+- **GUI controls for speed-limit and scheduler**: the engine/manager APIs are
+  done (`set_item_rate`/`set_global_rate`, `add_schedule`); wire them into the
+  Tkinter toolbar/Settings.
 - **Browser capture**: a browser extension + a native-messaging host that hands
   URLs to the engine — the clean, documented integration path (no kernel
   drivers needed).

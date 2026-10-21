@@ -21,6 +21,8 @@ from typing import Optional
 from .config import Settings, state_dir
 from .engine import Download, DownloadError
 from .models import Progress, Status
+from .ratelimit import RateLimiter
+from .scheduler import Scheduler
 
 
 # ---- categories (by file extension) --------------------------------------
@@ -61,6 +63,7 @@ class DownloadItem:
     eta: Optional[float] = None
     status: str = ST_QUEUED
     connections: Optional[int] = None
+    max_rate_bps: int = 0          # per-download speed limit (0 = unlimited)
     headers: dict = field(default_factory=dict)
     error: str = ""
     added_at: float = field(default_factory=time.time)
@@ -86,19 +89,75 @@ class DownloadItem:
             "dest_path": self.dest_path, "size": self.size,
             "downloaded": self.downloaded, "speed": self.speed, "eta": self.eta,
             "status": self.status, "connections": self.connections,
+            "max_rate_bps": self.max_rate_bps,
             "headers": dict(self.headers), "error": self.error, "added_at": self.added_at,
         }
 
 
 class DownloadManager:
-    def __init__(self, settings: Optional[Settings] = None, max_concurrent: int = 3):
+    def __init__(self, settings: Optional[Settings] = None, max_concurrent: int = 3,
+                 global_rate_bps: int = 0):
         self.settings = settings or Settings()
         self.max_concurrent = max_concurrent
         self.items: dict[str, DownloadItem] = {}
         self._order: list[str] = []
         self._lock = threading.RLock()
         self._store = state_dir() / "downloads.json"
+        # Shared across every running download so their combined rate is capped.
+        self._global_limiter = RateLimiter(global_rate_bps)
+        # Time-based scheduler (pause/resume the queue, change the global rate).
+        # Created and loaded here but not started until start_scheduler().
+        self.scheduler = Scheduler(
+            actions={
+                "pause_all": lambda r: self.pause_all(),
+                "resume_all": lambda r: self.resume_all(),
+                "set_global_rate": lambda r: self.set_global_rate(r.rate_bps),
+            },
+            store=state_dir() / "schedule.json",
+        )
+        self.scheduler.load()
         self.load()
+
+    # ---- scheduling (thin wrappers over self.scheduler) ------------------
+    def start_scheduler(self):
+        self.scheduler.start()
+
+    def stop_scheduler(self):
+        self.scheduler.stop()
+
+    def add_schedule(self, action: str, at: str, repeat: str = "daily",
+                     days=None, rate_bps: int = 0):
+        """e.g. add_schedule('resume_all','01:00'); add_schedule('pause_all','07:00')."""
+        return self.scheduler.add_rule(action, at, repeat=repeat, days=days,
+                                       rate_bps=rate_bps)
+
+    def remove_schedule(self, rule_id: str):
+        self.scheduler.remove_rule(rule_id)
+
+    def set_schedule_enabled(self, rule_id: str, enabled: bool):
+        self.scheduler.set_enabled(rule_id, enabled)
+
+    def list_schedules(self):
+        return self.scheduler.list_rules()
+
+    # ---- speed limits ----------------------------------------------------
+    @property
+    def global_rate_bps(self) -> float:
+        return self._global_limiter.rate
+
+    def set_global_rate(self, rate_bps: float):
+        """Set the combined cap across all downloads (0 = unlimited); live."""
+        self._global_limiter.set_rate(rate_bps)
+
+    def set_item_rate(self, item_id: str, rate_bps: int):
+        """Set one download's limit (0 = unlimited); applies live if running."""
+        it = self.items.get(item_id)
+        if not it:
+            return
+        it.max_rate_bps = max(0, int(rate_bps))
+        if it._dl is not None:
+            it._dl.set_rate(it.max_rate_bps)
+        self.save()
 
     # ---- persistence -----------------------------------------------------
     def load(self):
@@ -137,12 +196,14 @@ class DownloadManager:
 
     # ---- mutations -------------------------------------------------------
     def add(self, url: str, filename: str = "", connections: Optional[int] = None,
-            headers: Optional[dict] = None, start: bool = True) -> DownloadItem:
+            headers: Optional[dict] = None, start: bool = True,
+            max_rate_bps: int = 0) -> DownloadItem:
         item = DownloadItem(
             id=uuid.uuid4().hex[:12],
             url=url.strip(),
             filename=filename or "",
             connections=connections,
+            max_rate_bps=max(0, int(max_rate_bps)),
             headers=headers or {},
             status=ST_QUEUED if start else ST_PAUSED,
         )
@@ -170,6 +231,9 @@ class DownloadManager:
         settings = Settings(**self.settings.as_dict())
         if item.connections:
             settings.connections = item.connections
+        # Per-item limit overrides the manager default; global cap is separate.
+        if item.max_rate_bps:
+            settings.max_rate_bps = item.max_rate_bps
 
         def cb(p: Progress):
             item.downloaded = p.downloaded
@@ -183,7 +247,8 @@ class DownloadManager:
                     item.filename = os.path.basename(item._dl.dest_path)
 
         dl = Download(item.url, settings=settings, dest_path=item.dest_path,
-                      progress_cb=cb, headers=item.headers)
+                      progress_cb=cb, headers=item.headers,
+                      global_limiter=self._global_limiter)
         item._dl = dl
         try:
             path = dl.start()

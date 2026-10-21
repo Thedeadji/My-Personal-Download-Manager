@@ -38,6 +38,9 @@ class Settings:
     retry_backoff: float = 1.5  # exponential base, seconds
     # Chunk size for streaming reads/writes.
     chunk_size: int = 1024 * 64  # 64 KiB
+    # Per-download speed limit in bytes/sec (0 = unlimited). Shared across this
+    # download's segment workers, so it caps their combined rate.
+    max_rate_bps: int = 0
     # Identify ourselves honestly rather than impersonating a browser.
     user_agent: str = "MyPersonalDownloadManager/0.1 (+research)"
     # Default output directory.
@@ -58,4 +61,7 @@ class Settings:
                 pass
         if os.environ.get("MDM_OUTPUT_DIR"):
             s.output_dir = os.environ["MDM_OUTPUT_DIR"]
+        if os.environ.get("MDM_MAX_RATE"):
+            from .ratelimit import parse_rate
+            s.max_rate_bps = parse_rate(os.environ["MDM_MAX_RATE"])
         return s
