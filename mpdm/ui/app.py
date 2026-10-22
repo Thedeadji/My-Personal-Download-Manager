@@ -146,19 +146,23 @@ class SettingsDialog(tk.Toplevel):
         self.glim = tk.StringVar(value="" if not cur else format_rate(cur).replace("/s", ""))
         ttk.Entry(frm, textvariable=self.glim, width=16).grid(row=5, column=0, sticky="w")
 
+        self.categorize = tk.BooleanVar(value=mgr.settings.categorize)
+        ttk.Checkbutton(frm, text="Sort downloads into type folders (Video, Music, Documents, Compressed, Programs)",
+                        variable=self.categorize).grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
         self.ua_browser = tk.BooleanVar(value=(mgr.settings.user_agent == BROWSER_USER_AGENT))
         ttk.Checkbutton(frm, text="Send browser User-Agent (for sites that block non-browsers)",
-                        variable=self.ua_browser).grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 0))
+                        variable=self.ua_browser).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Label(frm, text="Custom User-Agent (optional; overrides the checkbox)").grid(
-            row=7, column=0, sticky="w", pady=(6, 0))
+            row=8, column=0, sticky="w", pady=(6, 0))
         custom = "" if mgr.settings.user_agent in (DEFAULT_USER_AGENT, BROWSER_USER_AGENT) \
             else mgr.settings.user_agent
         self.ua_custom = tk.StringVar(value=custom)
         ttk.Entry(frm, textvariable=self.ua_custom, width=52).grid(
-            row=8, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+            row=9, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
         btns = ttk.Frame(frm)
-        btns.grid(row=9, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        btns.grid(row=10, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right", padx=4)
         ttk.Button(btns, text="Save", command=self._save).pack(side="right")
         frm.columnconfigure(0, weight=1)
@@ -172,6 +176,7 @@ class SettingsDialog(tk.Toplevel):
         self.mgr.settings.output_dir = self.dir.get().strip() or self.mgr.settings.output_dir
         self.mgr.settings.connections = max(1, int(self.conn.get()))
         self.mgr.max_concurrent = max(1, int(self.maxc.get()))
+        self.mgr.settings.categorize = bool(self.categorize.get())
         # Global speed limit.
         try:
             self.mgr.set_global_rate(parse_rate(self.glim.get()))

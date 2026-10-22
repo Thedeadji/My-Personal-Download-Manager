@@ -71,11 +71,14 @@ class ProgressPopup:
         self._dest = None
         if job.get("filename"):
             from ..http_client import sanitize_filename
+            from ..categories import categorized_dir
             from .. import storage
             try:
-                os.makedirs(self.settings.output_dir, exist_ok=True)
-                self._dest = storage.unique_dest(
-                    self.settings.output_dir, sanitize_filename(job["filename"]))
+                fname = sanitize_filename(job["filename"])
+                out_dir = categorized_dir(self.settings.output_dir, fname,
+                                          self.settings.categorize)
+                os.makedirs(out_dir, exist_ok=True)
+                self._dest = storage.unique_dest(out_dir, fname)
             except OSError:
                 self._dest = None
 

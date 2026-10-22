@@ -66,6 +66,9 @@ class Settings:
     # Per-download speed limit in bytes/sec (0 = unlimited). Shared across this
     # download's segment workers, so it caps their combined rate.
     max_rate_bps: int = 0
+    # Sort finished downloads into IDM-style subfolders by type (Video, Music,
+    # Documents, Compressed, Programs); "Other" types stay in output_dir.
+    categorize: bool = True
     # Identify ourselves honestly by default; can be overridden (e.g. a browser
     # UA) for servers that reject non-browser clients. See resolve_user_agent().
     user_agent: str = DEFAULT_USER_AGENT
@@ -92,4 +95,6 @@ class Settings:
             s.max_rate_bps = parse_rate(os.environ["MDM_MAX_RATE"])
         if os.environ.get("MDM_USER_AGENT"):
             s.user_agent = resolve_user_agent(os.environ["MDM_USER_AGENT"])
+        if os.environ.get("MDM_CATEGORIZE"):
+            s.categorize = os.environ["MDM_CATEGORIZE"].strip().lower() not in ("0", "false", "no", "")
         return s

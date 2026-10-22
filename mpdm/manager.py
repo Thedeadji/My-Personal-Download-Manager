@@ -25,23 +25,8 @@ from .ratelimit import RateLimiter
 from .scheduler import Scheduler
 
 
-# ---- categories (by file extension) --------------------------------------
-CATEGORY_EXT = {
-    "Video": {"mp4", "mkv", "webm", "avi", "mov", "flv", "m4v", "ts", "wmv", "mpg", "mpeg"},
-    "Audio": {"mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "wma"},
-    "Documents": {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "epub", "csv"},
-    "Archives": {"zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "iso", "cab"},
-    "Programs": {"exe", "msi", "msix", "dmg", "pkg", "deb", "rpm", "apk", "appimage"},
-}
-CATEGORIES = ["All", "Downloading", "Finished", "Video", "Audio", "Documents", "Archives", "Programs", "Other"]
-
-
-def classify(filename: str) -> str:
-    ext = os.path.splitext(filename or "")[1].lower().lstrip(".")
-    for cat, exts in CATEGORY_EXT.items():
-        if ext in exts:
-            return cat
-    return "Other"
+# Categories live in categories.py; re-exported here for existing importers.
+from .categories import CATEGORY_EXT, CATEGORIES, classify  # noqa: F401,E402
 
 
 ST_QUEUED = "queued"

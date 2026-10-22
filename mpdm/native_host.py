@@ -147,9 +147,12 @@ def _run_job(job: dict) -> None:
     dest = None
     if job.get("filename"):
         from .http_client import sanitize_filename
-        os.makedirs(settings.output_dir, exist_ok=True)
+        from .categories import categorized_dir
         from . import storage
-        dest = storage.unique_dest(settings.output_dir, sanitize_filename(job["filename"]))
+        fname = sanitize_filename(job["filename"])
+        out_dir = categorized_dir(settings.output_dir, fname, settings.categorize)
+        os.makedirs(out_dir, exist_ok=True)
+        dest = storage.unique_dest(out_dir, fname)
 
     headers = job.get("headers") or {}
 

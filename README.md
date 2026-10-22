@@ -24,6 +24,8 @@ work internally.
 - **Scheduler** — start/pause the queue or change the global speed limit at set
   times (daily windows or a one-shot), e.g. download only during off-peak hours.
 - **Integrity check** — final file size is verified against `Content-Length`.
+- **Auto-sort by type** — finished downloads are filed into IDM-style subfolders
+  (Video, Music, Documents, Compressed, Programs); toggle in Settings.
 - **HLS/DASH grabber** — parses `.m3u8` / `.mpd` manifests, downloads the
   segments concurrently, and muxes them to MP4 via `ffmpeg`. **AES-128**
   encrypted HLS is supported (keys/IVs tracked per segment, with key rotation),

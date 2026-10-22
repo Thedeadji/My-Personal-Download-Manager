@@ -28,6 +28,7 @@ from .config import Settings
 from .http_client import build_session, probe, open_range
 from .models import Segment, Status, Progress, RemoteInfo, TaskRecord
 from .ratelimit import RateLimiter
+from .categories import categorized_dir
 from . import storage
 
 ProgressCb = Callable[[Progress], None]
@@ -257,12 +258,16 @@ class Download:
         # 2. Decide output path. Prefer resuming a matching interrupted download
         #    in the output dir over creating a new (1), (2), ... copy.
         if not self.dest_path:
-            os.makedirs(self.settings.output_dir, exist_ok=True)
+            # Route into an IDM-style category subfolder (Video, Music, …) by
+            # file type when enabled; "Other" types stay in output_dir.
+            out_dir = categorized_dir(self.settings.output_dir, self.info.filename,
+                                      self.settings.categorize)
+            os.makedirs(out_dir, exist_ok=True)
             resumable = storage.find_resumable(
-                self.settings.output_dir, self.url, self.info.size, self.info.etag
+                out_dir, self.url, self.info.size, self.info.etag
             )
             self.dest_path = resumable or storage.unique_dest(
-                self.settings.output_dir, self.info.filename
+                out_dir, self.info.filename
             )
 
         # 3. Resume if a valid sidecar exists and the remote hasn't changed
