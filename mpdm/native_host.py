@@ -74,12 +74,65 @@ def _log(msg: str) -> None:
         pass
 
 
+# ---- download popup launch ----------------------------------------------
+def _popup_python(executable: str) -> str:
+    """Prefer pythonw.exe over python.exe so no console window flashes."""
+    base = os.path.basename(executable).lower()
+    if os.name == "nt" and base.startswith("python") and "pythonw" not in base:
+        cand = os.path.join(os.path.dirname(executable), "pythonw.exe")
+        if os.path.exists(cand):
+            return cand
+    return executable
+
+
+def _popup_command(executable: str, job_path: str) -> list:
+    """Command line that opens the per-download progress popup."""
+    return [_popup_python(executable), "-m", "mpdm.ui.progress", job_path]
+
+
+def _launch_popup(job: dict):
+    """Spawn the desktop progress popup to run this download.
+
+    Returns the Popen handle (the caller waits on it so the host — the popup's
+    parent — stays alive for the download's lifetime), or None if the popup
+    couldn't be launched or MDM_NO_POPUP=1 disables it.
+    """
+    if os.environ.get("MDM_NO_POPUP"):
+        return None
+    import subprocess
+    import tempfile
+    try:
+        fd, path = tempfile.mkstemp(suffix=".json", prefix="mdm_job_")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(job, f)
+        creationflags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+        return subprocess.Popen(_popup_command(sys.executable, path),
+                                creationflags=creationflags, close_fds=True)
+    except Exception as e:  # noqa: BLE001
+        _log(f"popup launch failed: {e}")
+        return None
+
+
 # ---- job handling --------------------------------------------------------
 def _run_job(job: dict) -> None:
     job_id = job.get("id") or uuid.uuid4().hex[:12]
     url = job.get("url")
     if not url:
         write_message({"type": "error", "id": job_id, "message": "no url"})
+        return
+
+    # Hand the download to a desktop progress popup (IDM-style). The popup owns
+    # the transfer, so the host must not also download it; we wait on the popup
+    # process (keeping it alive as our child) and report done when it closes.
+    # Falls back to a headless download if the popup can't launch (MDM_NO_POPUP=1).
+    proc = _launch_popup(job)
+    if proc is not None:
+        write_message({"type": "accepted", "id": job_id,
+                       "filename": job.get("filename", ""), "popup": True})
+        _log(f"popup launched for {job_id} -> {url}")
+        proc.wait()
+        write_message({"type": "done", "id": job_id, "path": ""})
+        _log(f"popup closed for {job_id}")
         return
 
     settings = Settings.from_env()
