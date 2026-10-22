@@ -106,8 +106,13 @@ python install_host.py --extension-id <THE_ID> --browser chrome
 Then right-click any link/media → “Download with MyPersonalDownloadManager”. A
 small **progress popup** opens for each browser download (filename, speed,
 downloaded / total, and Stop/Resume) — like IDM's download dialog. Set the
-environment variable `MDM_NO_POPUP=1` to download silently instead. Full steps
-are in `extension/README.md`.
+environment variable `MDM_NO_POPUP=1` to download silently instead.
+
+On pages with video or audio, a **floating “⬇ Download media” panel** appears
+(like IDM's video panel): it lists the page's HTML5 media **and** any HLS/DASH
+streams sniffed from the network, and one click sends the chosen item to MPDM
+(HLS/DASH are grabbed and muxed to MP4). Toggle it with **“Show video download
+panel”** in the extension popup. Full steps are in `extension/README.md`.
 
 ### Library
 

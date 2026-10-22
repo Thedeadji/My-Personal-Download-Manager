@@ -49,6 +49,59 @@ function notify(title, message) {
   }
 }
 
+// ---- media detection for the on-page "download video" panel --------------
+// We passively watch network requests per tab and remember ones that look like
+// downloadable media (direct files and HLS/DASH manifests). The content script
+// asks for this list to build its floating panel.
+
+const MEDIA_RE = /\.(m3u8|mpd|mp4|m4v|webm|mkv|mov|flv|mp3|m4a|aac|flac|ogg|wav)(\?|#|$)/i;
+const AUDIO_RE = /\.(mp3|m4a|aac|flac|ogg|wav)(\?|#|$)/i;
+const mediaByTab = new Map(); // tabId -> Map(url -> {url,type,ctype,size})
+
+function isStreamUrl(url, ctype) {
+  return /\.(m3u8|mpd)(\?|#|$)/i.test(url) || ctype === "hls" || ctype === "dash";
+}
+
+function addMedia(tabId, url, info) {
+  if (tabId < 0 || !url || !/^https?:/i.test(url)) return;
+  let m = mediaByTab.get(tabId);
+  if (!m) { m = new Map(); mediaByTab.set(tabId, m); }
+  if (!m.has(url) && m.size > 60) return; // cap per tab
+  m.set(url, Object.assign(m.get(url) || { url }, info));
+}
+
+function ctypeKind(ct) {
+  ct = (ct || "").toLowerCase();
+  if (ct.includes("mpegurl")) return { type: "video", ctype: "hls" };
+  if (ct.includes("dash+xml")) return { type: "video", ctype: "dash" };
+  if (ct.startsWith("video/")) return { type: "video" };
+  if (ct.startsWith("audio/")) return { type: "audio" };
+  return null;
+}
+
+chrome.webRequest.onBeforeRequest.addListener((d) => {
+  if (MEDIA_RE.test(d.url)) {
+    addMedia(d.tabId, d.url, { type: AUDIO_RE.test(d.url) ? "audio" : "video" });
+  }
+}, { urls: ["<all_urls>"] });
+
+chrome.webRequest.onHeadersReceived.addListener((d) => {
+  let ct = "", len = 0;
+  for (const h of d.responseHeaders || []) {
+    const n = h.name.toLowerCase();
+    if (n === "content-type") ct = h.value || "";
+    else if (n === "content-length") len = parseInt(h.value || "0", 10) || 0;
+  }
+  const k = ctypeKind(ct);
+  if (k) addMedia(d.tabId, d.url, Object.assign({ size: len || undefined }, k));
+}, { urls: ["<all_urls>"] }, ["responseHeaders"]);
+
+function clearTabMedia(tabId) { mediaByTab.delete(tabId); }
+chrome.tabs.onRemoved.addListener(clearTabMedia);
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.status === "loading" && info.url) clearTabMedia(tabId);
+});
+
 // ---- confirmation gate ---------------------------------------------------
 
 async function queueJob(job) {
@@ -185,6 +238,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "setConfirm") {
     chrome.storage.local.set({ confirm: !!msg.value }, () => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === "getMedia") {
+    const tabId = sender.tab ? sender.tab.id : msg.tabId;
+    const m = mediaByTab.get(tabId);
+    sendResponse({ media: m ? [...m.values()] : [] });
+    return true;
+  }
+  if (msg.type === "downloadMedia" && msg.url) {
+    const stream = !!msg.stream || isStreamUrl(msg.url, msg.ctype);
+    let filename = msg.filename || filenameFromUrl(msg.url) || "video";
+    if (stream && !/\.(mp4|mkv|webm)$/i.test(filename)) filename += ".mp4";
+    queueJob({
+      url: msg.url, filename, stream,
+      headers: { Referer: msg.pageUrl || "" },
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === "getVideoPanel") {
+    chrome.storage.local.get({ videoPanel: true }, (d) => sendResponse(d));
+    return true;
+  }
+  if (msg.type === "setVideoPanel") {
+    chrome.storage.local.set({ videoPanel: !!msg.value }, () => sendResponse({ ok: true }));
     return true;
   }
   if (msg.type === "getConfirm") {

@@ -113,6 +113,14 @@ def _launch_popup(job: dict):
         return None
 
 
+def _is_stream(job: dict) -> bool:
+    """True if the job is an HLS/DASH stream (grabber), not a plain file."""
+    if job.get("stream"):
+        return True
+    url = (job.get("url") or "").lower()
+    return ".m3u8" in url or ".mpd" in url
+
+
 # ---- job handling --------------------------------------------------------
 def _run_job(job: dict) -> None:
     job_id = job.get("id") or uuid.uuid4().hex[:12]
@@ -176,11 +184,29 @@ def _run_job(job: dict) -> None:
         })
 
     try:
-        dl = Download(url, settings=settings, dest_path=dest,
-                      progress_cb=on_progress, headers=headers)
         write_message({"type": "accepted", "id": job_id,
                        "filename": os.path.basename(dest) if dest else ""})
-        path = dl.start()
+        if _is_stream(job):
+            # HLS/DASH -> grab segments and mux to MP4 (needs ffmpeg).
+            from . import grabber
+            out = dest or os.path.join(settings.output_dir, "video.mp4")
+            if not out.lower().endswith((".mp4", ".mkv", ".webm")):
+                out += ".mp4"
+
+            def seg_cb(done, total):
+                now = time.time()
+                if (now - last_emit[0]) < 0.3:
+                    return
+                last_emit[0] = now
+                pct = (done * 100.0 / total) if total else None
+                write_message({"type": "progress", "id": job_id, "percent": pct,
+                               "downloaded": done, "total": total, "status": "downloading"})
+
+            path = grabber.grab(url, out, settings=settings, progress_cb=seg_cb)
+        else:
+            dl = Download(url, settings=settings, dest_path=dest,
+                          progress_cb=on_progress, headers=headers)
+            path = dl.start()
         write_message({"type": "done", "id": job_id, "path": path})
         _log(f"done {job_id} -> {path}")
     except Exception as e:  # noqa: BLE001

@@ -10,12 +10,22 @@
     "cookies",
     "nativeMessaging",
     "notifications",
-    "storage"
+    "storage",
+    "webRequest",
+    "tabs"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
   "action": {
     "default_title": "MyPersonalDownloadManager",
     "default_popup": "popup.html"

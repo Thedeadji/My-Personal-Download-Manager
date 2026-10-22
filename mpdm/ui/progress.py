@@ -66,15 +66,21 @@ class ProgressPopup:
         if job.get("output_dir"):
             self.settings.output_dir = job["output_dir"]
         self.headers = job.get("headers") or {}
+        # HLS/DASH streams go through the grabber (segments -> MP4), not the
+        # plain downloader; they can't pause/resume.
+        self.is_stream = bool(job.get("stream"))
 
-        # Resolve a destination up front if the browser supplied a filename.
+        # Resolve a destination up front (browser filename, or a default for a
+        # stream which must have a concrete .mp4 output path to mux into).
         self._dest = None
-        if job.get("filename"):
+        if job.get("filename") or self.is_stream:
             from ..http_client import sanitize_filename
             from ..categories import categorized_dir
             from .. import storage
             try:
-                fname = sanitize_filename(job["filename"])
+                fname = sanitize_filename(job.get("filename") or "video.mp4")
+                if self.is_stream and not fname.lower().endswith((".mp4", ".mkv", ".webm")):
+                    fname += ".mp4"
                 out_dir = categorized_dir(self.settings.output_dir, fname,
                                           self.settings.categorize)
                 os.makedirs(out_dir, exist_ok=True)
@@ -84,6 +90,7 @@ class ProgressPopup:
 
         self._lock = threading.Lock()
         self._latest = None
+        self._seg = (0, 0)            # (segments_done, segments_total) for streams
         self._dl = None
         self._state = "running"       # running | paused | done | error
         self._message = ""
@@ -120,6 +127,26 @@ class ProgressPopup:
     # ---- download control ------------------------------------------------
     def _begin(self):
         self._state = "running"
+
+        if self.is_stream:
+            # HLS/DASH: fetch segments and mux to MP4 via the grabber. No pause.
+            self.pause_btn.config(text="Stop", state="disabled")
+
+            def run_stream():
+                def seg_cb(done, total):
+                    with self._lock:
+                        self._seg = (done, total)
+                try:
+                    from .. import grabber
+                    path = grabber.grab(self.url, self._dest, settings=self.settings,
+                                        progress_cb=seg_cb)
+                    self._finish("done", f"Completed — {path}")
+                except Exception as e:  # noqa: BLE001
+                    self._finish("error", f"Error: {e}")
+
+            threading.Thread(target=run_stream, daemon=True).start()
+            return
+
         self.pause_btn.config(text="Stop", state="normal")
 
         def run():
@@ -182,8 +209,23 @@ class ProgressPopup:
         if self._dl is not None and self._dl.dest_path:
             self._dest = self._dl.dest_path
             self.name_lbl.config(text=os.path.basename(self._dl.dest_path))
+        elif self.is_stream and self._dest:
+            self.name_lbl.config(text=os.path.basename(self._dest))
 
-        if p is not None and state in ("running", "paused"):
+        if self.is_stream and state == "running":
+            with self._lock:
+                done, total = self._seg
+            if total:
+                if self.bar["mode"] != "determinate":
+                    self.bar.stop()
+                    self.bar.config(mode="determinate")
+                self.bar["value"] = done * 100.0 / total
+                self.info.config(text=f"Fetching segments {done}/{total} "
+                                      f"({done * 100.0 / total:.0f}%)")
+            else:
+                self.info.config(text="Resolving stream…")
+            self.sub.config(text="Streaming download (HLS/DASH) → MP4")
+        elif p is not None and state in ("running", "paused"):
             pct = p.percent
             total = _human(p.total) if p.total else "?"
             if pct is not None:

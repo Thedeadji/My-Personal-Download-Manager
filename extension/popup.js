@@ -2,6 +2,7 @@
 
 const cb = document.getElementById("intercept");
 const confirmCb = document.getElementById("confirm");
+const videoCb = document.getElementById("videoPanel");
 const statusEl = document.getElementById("status");
 const pingBtn = document.getElementById("ping");
 
@@ -10,6 +11,17 @@ chrome.runtime.sendMessage({ type: "getIntercept" }, (d) => {
 });
 chrome.runtime.sendMessage({ type: "getConfirm" }, (d) => {
   if (d) confirmCb.checked = !!d.confirm;
+});
+chrome.runtime.sendMessage({ type: "getVideoPanel" }, (d) => {
+  if (d) videoCb.checked = d.videoPanel !== false;
+});
+
+videoCb.addEventListener("change", () => {
+  chrome.runtime.sendMessage({ type: "setVideoPanel", value: videoCb.checked }, () => {
+    statusEl.textContent = videoCb.checked
+      ? "A download panel will appear on pages with video/audio."
+      : "The on-page video download panel is off.";
+  });
 });
 
 confirmCb.addEventListener("change", () => {

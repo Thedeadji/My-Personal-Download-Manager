@@ -14,6 +14,14 @@ def test_popup_command_shape():
     assert cmd[-3:] == ["-m", "mpdm.ui.progress", "/tmp/job.json"]
 
 
+def test_is_stream():
+    assert nh._is_stream({"stream": True, "url": "https://h/x"}) is True
+    assert nh._is_stream({"url": "https://h/playlist.m3u8"}) is True
+    assert nh._is_stream({"url": "https://h/manifest.mpd?x=1"}) is True
+    assert nh._is_stream({"url": "https://h/movie.mp4"}) is False
+    assert nh._is_stream({"url": "https://h/file.zip"}) is False
+
+
 def test_launch_disabled_by_env():
     old = os.environ.get("MDM_NO_POPUP")
     os.environ["MDM_NO_POPUP"] = "1"
