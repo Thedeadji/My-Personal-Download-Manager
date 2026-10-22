@@ -89,6 +89,20 @@ rules (pause/resume the queue or change the global limit at set times). The list
 persists across restarts, and Add URL pre-fills from your clipboard. No license or
 registration — it's free and open.
 
+### Web UI (browser dashboard)
+
+```bash
+python -m mpdm.web                 # serve on http://127.0.0.1:8765 and open a browser
+python -m mpdm.web --port 9000 --no-open
+```
+
+A dependency-free local dashboard (standard-library `http.server` + one HTML
+page) over the same engine: add a URL, watch per-row size / progress / status /
+speed / time-left, Stop/Resume/Remove each, set a per-download or global speed
+limit, Pause-all / Resume-all / Clear finished. Binds to localhost only. Handy
+when you want a browser UI or a headless box you drive from another machine
+(use `--host 0.0.0.0` at your own risk on trusted networks).
+
 ### Browser integration (extension + native host)
 
 Send downloads straight from Chrome/Edge to the MPDM engine — the standards-based
