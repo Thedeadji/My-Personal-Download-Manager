@@ -394,6 +394,11 @@ class App(tk.Tk):
         self.tree.bind("<Double-1>", lambda _e: self.on_open_folder())
 
     def _build_statusbar(self):
+        # Detail line: shows the selected row's error message / path / URL.
+        self.detail = tk.StringVar(value="")
+        self._detail_lbl = ttk.Label(self, textvariable=self.detail, anchor="w",
+                                     relief="sunken", padding=(8, 3))
+        self._detail_lbl.pack(fill="x")
         self.status = tk.StringVar(value="Ready")
         ttk.Label(self, textvariable=self.status, anchor="w", relief="sunken", padding=(8, 3)).pack(fill="x")
 
@@ -553,6 +558,18 @@ class App(tk.Tk):
         agg_speed = sum(i.speed for i in self.mgr.items.values() if i.status == ST_DOWNLOADING)
         self.status.set(f"{total} downloads · {active} active · {done} finished · "
                         f"{human(agg_speed)}/s total")
+
+        # Detail line follows the selection: error first, else path/URL.
+        sel = self.tree.selection()
+        it = self.mgr.items.get(sel[0]) if sel else None
+        if it and it.status == ST_ERROR and it.error:
+            self.detail.set(f"⚠ {it.error}")
+            self._detail_lbl.config(foreground="#a00")
+        elif it:
+            self.detail.set(it.dest_path or it.url)
+            self._detail_lbl.config(foreground="#555")
+        else:
+            self.detail.set("")
         self.after(500, self._refresh)
 
 
