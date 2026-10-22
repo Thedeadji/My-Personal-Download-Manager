@@ -329,18 +329,21 @@ class App(tk.Tk):
     def _build_toolbar(self):
         bar = ttk.Frame(self, padding=(8, 6))
         bar.pack(fill="x")
-        defs = [
-            ("＋ Add URL", self.on_add),
-            ("▶ Resume", self.on_resume),
-            ("⏹ Stop/Pause", self.on_pause),
-            ("✕ Remove", self.on_remove),
-            ("🗑 Clear finished", self.on_clear),
-            ("📂 Open folder", self.on_open_folder),
-            ("⏱ Scheduler", self.on_scheduler),
-            ("⚙ Settings", self.on_settings),
-        ]
-        for text, cmd in defs:
-            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=2)
+        ttk.Button(bar, text="＋ Add URL", command=self.on_add).pack(side="left", padx=2)
+        self.b_resume = ttk.Button(bar, text="▶ Resume", command=self.on_resume)
+        self.b_resume.pack(side="left", padx=2)
+        self.b_pause = ttk.Button(bar, text="⏹ Stop/Pause", command=self.on_pause)
+        self.b_pause.pack(side="left", padx=2)
+        self.b_remove = ttk.Button(bar, text="✕ Remove", command=self.on_remove)
+        self.b_remove.pack(side="left", padx=2)
+        self.b_delete = ttk.Button(bar, text="🗑 Delete file",
+                                   command=lambda: self.on_remove(delete=True))
+        self.b_delete.pack(side="left", padx=2)
+        ttk.Button(bar, text="Clear finished", command=self.on_clear).pack(side="left", padx=2)
+        self.b_open = ttk.Button(bar, text="📂 Open folder", command=self.on_open_folder)
+        self.b_open.pack(side="left", padx=2)
+        ttk.Button(bar, text="⏱ Scheduler", command=self.on_scheduler).pack(side="left", padx=2)
+        ttk.Button(bar, text="⚙ Settings", command=self.on_settings).pack(side="left", padx=2)
         ttk.Button(bar, text="⏸ Pause all", command=lambda: (self.mgr.pause_all(), self._refresh())).pack(side="right", padx=2)
         ttk.Button(bar, text="⏵ Resume all", command=lambda: (self.mgr.resume_all(), self._refresh())).pack(side="right", padx=2)
         # Quick global speed-limit box (blank/0 = unlimited).
@@ -392,6 +395,7 @@ class App(tk.Tk):
         self.menu.add_command(label="Remove + delete file", command=lambda: self.on_remove(delete=True))
         self.tree.bind("<Button-3>", self._popup)
         self.tree.bind("<Double-1>", lambda _e: self.on_open_folder())
+        self.tree.bind("<<TreeviewSelect>>", lambda _e: self._update_buttons())
 
     def _build_statusbar(self):
         # Detail line: shows the selected row's error message / path / URL.
@@ -417,6 +421,23 @@ class App(tk.Tk):
 
     def _selected_ids(self):
         return list(self.tree.selection())
+
+    def _update_buttons(self):
+        """Enable/disable toolbar buttons based on the current selection."""
+        items = [self.mgr.items.get(i) for i in self._selected_ids()]
+        items = [it for it in items if it]
+        statuses = {it.status for it in items}
+        has_sel = bool(items)
+
+        def state(on):
+            return "normal" if on else "disabled"
+
+        # Resume only for paused/errored; Stop/Pause only for active/queued.
+        self.b_resume.config(state=state(bool(statuses & {ST_PAUSED, ST_ERROR})))
+        self.b_pause.config(state=state(bool(statuses & {ST_DOWNLOADING, ST_QUEUED})))
+        self.b_remove.config(state=state(has_sel))
+        self.b_delete.config(state=state(any(it.dest_path for it in items)))
+        self.b_open.config(state=state(any(it.dest_path for it in items)))
 
     def _visible_items(self):
         items = self.mgr.ordered()
@@ -570,6 +591,7 @@ class App(tk.Tk):
             self._detail_lbl.config(foreground="#555")
         else:
             self.detail.set("")
+        self._update_buttons()
         self.after(500, self._refresh)
 
 
