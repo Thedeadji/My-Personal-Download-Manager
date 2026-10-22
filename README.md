@@ -71,17 +71,21 @@ the matching `.mpdm` sidecar and **resumes** it instead of making a new copy.
 ### GUI (download manager)
 
 ```bash
-python -m mpdm.ui.app
+python -m mpdm.ui          # the home window (same as python -m mpdm.ui.app)
 ```
 
-A desktop download-manager window: a toolbar (Add URL, Resume, Pause, Remove,
-Clear finished, Open folder, Settings), a category sidebar (All, Downloading,
-Finished, Video, Audio, Documents, Archives, Programs, Other), and a live table
-with per-row name / size / % / status / speed / time-left. Multiple downloads run
-at once (set the limit in Settings → "Max simultaneous downloads"); each can be
-paused, resumed, or removed, and the list persists across restarts. Add URL
-pre-fills from your clipboard if it holds a link. No license or registration —
-it's free and open.
+A desktop download-manager window: a toolbar (Add URL, Resume, Stop/Pause,
+Remove, Clear finished, Open folder, **Scheduler**, Settings, plus Pause-all /
+Resume-all and a **global speed-limit** box), a category sidebar (All,
+Downloading, Finished, Video, Audio, Documents, Archives, Programs, Other), and a
+live table with per-row name / size / % / status / speed / time-left. Multiple
+downloads run at once (set the limit in Settings → "Max simultaneous downloads");
+each can be paused, resumed, removed, or given its **own speed limit** (right-click
+→ "Set speed limit…"). **Settings** also holds the global limit and the
+**browser User-Agent** toggle; **Scheduler** opens an editor for daily/one-shot
+rules (pause/resume the queue or change the global limit at set times). The list
+persists across restarts, and Add URL pre-fills from your clipboard. No license or
+registration — it's free and open.
 
 ### Browser integration (extension + native host)
 
@@ -173,14 +177,11 @@ python -m pytest tests/ -v      # or: python tests/test_engine.py
 
 - **SAMPLE-AES HLS**: the partial-encryption mode (AES-128 full-segment is
   already supported); needs container-aware decryption — marked in `hls.py`.
-- **DASH SegmentList/SegmentBase**: handle the non-template manifest shapes
-  (marked in `dash.py`).
-- **GUI controls for speed-limit and scheduler**: the engine/manager APIs are
-  done (`set_item_rate`/`set_global_rate`, `add_schedule`); wire them into the
-  Tkinter toolbar/Settings.
-- **Browser capture**: a browser extension + a native-messaging host that hands
-  URLs to the engine — the clean, documented integration path (no kernel
-  drivers needed).
+- **Standalone installer**: bundle into a single `.exe` with PyInstaller and an
+  Inno Setup / NSIS installer (detect/bundle ffmpeg; optionally register the
+  native host).
+- **Web UI**: an optional FastAPI + HTML dashboard over the same engine, as a
+  lighter-footprint alternative to the Tkinter window.
 
 ## Responsible use
 

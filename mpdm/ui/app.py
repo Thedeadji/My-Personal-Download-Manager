@@ -18,7 +18,10 @@ try:
 except Exception as e:  # pragma: no cover
     raise SystemExit(f"Tkinter is not available in this Python environment: {e}")
 
-from ..config import Settings
+from ..config import (Settings, BROWSER_USER_AGENT, DEFAULT_USER_AGENT,
+                      resolve_user_agent)
+from ..ratelimit import parse_rate, format_rate
+from ..scheduler import ACTIONS
 from ..manager import (
     DownloadManager, CATEGORIES, classify,
     ST_DOWNLOADING, ST_PAUSED, ST_COMPLETED, ST_ERROR, ST_QUEUED,
@@ -136,8 +139,25 @@ class SettingsDialog(tk.Toplevel):
         self.conn = tk.IntVar(value=mgr.settings.connections)
         ttk.Spinbox(frm, from_=1, to=32, textvariable=self.conn, width=6).grid(row=3, column=1, sticky="w")
 
+        ttk.Label(frm, text="Global speed limit (e.g. 500k, 2m; blank = unlimited)").grid(
+            row=4, column=0, sticky="w", pady=(10, 0))
+        cur = mgr.global_rate_bps
+        self.glim = tk.StringVar(value="" if not cur else format_rate(cur).replace("/s", ""))
+        ttk.Entry(frm, textvariable=self.glim, width=16).grid(row=5, column=0, sticky="w")
+
+        self.ua_browser = tk.BooleanVar(value=(mgr.settings.user_agent == BROWSER_USER_AGENT))
+        ttk.Checkbutton(frm, text="Send browser User-Agent (for sites that block non-browsers)",
+                        variable=self.ua_browser).grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(frm, text="Custom User-Agent (optional; overrides the checkbox)").grid(
+            row=7, column=0, sticky="w", pady=(6, 0))
+        custom = "" if mgr.settings.user_agent in (DEFAULT_USER_AGENT, BROWSER_USER_AGENT) \
+            else mgr.settings.user_agent
+        self.ua_custom = tk.StringVar(value=custom)
+        ttk.Entry(frm, textvariable=self.ua_custom, width=52).grid(
+            row=8, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
         btns = ttk.Frame(frm)
-        btns.grid(row=4, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        btns.grid(row=9, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right", padx=4)
         ttk.Button(btns, text="Save", command=self._save).pack(side="right")
         frm.columnconfigure(0, weight=1)
@@ -151,8 +171,137 @@ class SettingsDialog(tk.Toplevel):
         self.mgr.settings.output_dir = self.dir.get().strip() or self.mgr.settings.output_dir
         self.mgr.settings.connections = max(1, int(self.conn.get()))
         self.mgr.max_concurrent = max(1, int(self.maxc.get()))
+        # Global speed limit.
+        try:
+            self.mgr.set_global_rate(parse_rate(self.glim.get()))
+        except ValueError:
+            messagebox.showwarning(__app_name__, "Couldn't parse the speed limit; ignoring it.",
+                                   parent=self)
+        # User-Agent: custom entry wins, else the browser checkbox, else honest default.
+        custom = self.ua_custom.get().strip()
+        if custom:
+            self.mgr.settings.user_agent = resolve_user_agent(custom)
+        elif self.ua_browser.get():
+            self.mgr.settings.user_agent = BROWSER_USER_AGENT
+        else:
+            self.mgr.settings.user_agent = DEFAULT_USER_AGENT
         self.mgr.pump()
         self.destroy()
+
+
+class SchedulerDialog(tk.Toplevel):
+    """Manage timed rules: pause/resume the queue or set the global limit."""
+
+    WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    def __init__(self, parent, mgr: DownloadManager):
+        super().__init__(parent)
+        self.title("Scheduler")
+        self.mgr = mgr
+        self.transient(parent)
+        self.grab_set()
+        frm = ttk.Frame(self, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        # existing rules
+        cols = ("action", "at", "repeat", "days", "rate", "on")
+        self.tree = ttk.Treeview(frm, columns=cols, show="headings", height=6, selectmode="browse")
+        for c, w in zip(cols, (110, 140, 60, 150, 80, 50)):
+            self.tree.heading(c, text=c.capitalize())
+            self.tree.column(c, width=w, anchor="w")
+        self.tree.grid(row=0, column=0, columnspan=6, sticky="nsew")
+
+        # add-rule row
+        self.action = tk.StringVar(value="resume_all")
+        ttk.Combobox(frm, textvariable=self.action, values=list(ACTIONS), width=14,
+                     state="readonly").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        self.at = tk.StringVar(value="01:00")
+        ttk.Entry(frm, textvariable=self.at, width=18).grid(row=1, column=1, sticky="w", pady=(10, 0))
+        self.repeat = tk.StringVar(value="daily")
+        ttk.Combobox(frm, textvariable=self.repeat, values=["daily", "once"], width=7,
+                     state="readonly").grid(row=1, column=2, sticky="w", pady=(10, 0))
+        self.days = tk.StringVar()
+        ttk.Entry(frm, textvariable=self.days, width=18).grid(row=1, column=3, sticky="w", pady=(10, 0))
+        self.rate = tk.StringVar()
+        ttk.Entry(frm, textvariable=self.rate, width=10).grid(row=1, column=4, sticky="w", pady=(10, 0))
+        ttk.Button(frm, text="Add rule", command=self._add).grid(row=1, column=5, sticky="e", pady=(10, 0))
+
+        hint = ("at: daily 'HH:MM' or one-shot 'YYYY-MM-DDTHH:MM'. "
+                "days: e.g. 'Mon,Tue' (daily only). rate: for set_global_rate (e.g. 500k).")
+        ttk.Label(frm, text=hint, foreground="#666", wraplength=560, justify="left").grid(
+            row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=3, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        self.run_btn = ttk.Button(btns, text="", command=self._toggle_run)
+        self.run_btn.pack(side="left")
+        ttk.Button(btns, text="Enable/Disable", command=self._toggle_enabled).pack(side="left", padx=6)
+        ttk.Button(btns, text="Remove", command=self._remove).pack(side="left")
+        ttk.Button(btns, text="Close", command=self.destroy).pack(side="right")
+
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(0, weight=1)
+        self._reload()
+        self._sync_run_btn()
+
+    def _reload(self):
+        self.tree.delete(*self.tree.get_children())
+        for r in self.mgr.list_schedules():
+            days = ",".join(self.WEEKDAYS[d] for d in r.days) if r.days else "every day"
+            rate = format_rate(r.rate_bps).replace("/s", "") if r.rate_bps else "—"
+            self.tree.insert("", "end", iid=r.id,
+                             values=(r.action, r.at, r.repeat, days, rate, "on" if r.enabled else "off"))
+
+    def _parse_days(self):
+        text = self.days.get().strip()
+        if not text:
+            return []
+        out = []
+        for tok in text.replace(" ", "").split(","):
+            if tok[:3].capitalize() in self.WEEKDAYS:
+                out.append(self.WEEKDAYS.index(tok[:3].capitalize()))
+        return out
+
+    def _add(self):
+        try:
+            self.mgr.add_schedule(
+                self.action.get(), self.at.get().strip(), repeat=self.repeat.get(),
+                days=self._parse_days(), rate_bps=parse_rate(self.rate.get()),
+            )
+        except ValueError as e:
+            messagebox.showwarning(__app_name__, f"Invalid rule: {e}", parent=self)
+            return
+        self._reload()
+
+    def _selected(self):
+        sel = self.tree.selection()
+        return sel[0] if sel else None
+
+    def _remove(self):
+        rid = self._selected()
+        if rid:
+            self.mgr.remove_schedule(rid)
+            self._reload()
+
+    def _toggle_enabled(self):
+        rid = self._selected()
+        if not rid:
+            return
+        rule = next((r for r in self.mgr.list_schedules() if r.id == rid), None)
+        if rule:
+            self.mgr.set_schedule_enabled(rid, not rule.enabled)
+            self._reload()
+
+    def _toggle_run(self):
+        if self.mgr.scheduler._thread and self.mgr.scheduler._thread.is_alive():
+            self.mgr.stop_scheduler()
+        else:
+            self.mgr.start_scheduler()
+        self._sync_run_btn()
+
+    def _sync_run_btn(self):
+        running = bool(self.mgr.scheduler._thread and self.mgr.scheduler._thread.is_alive())
+        self.run_btn.config(text="Stop scheduler" if running else "Start scheduler")
 
 
 class App(tk.Tk):
@@ -163,12 +312,18 @@ class App(tk.Tk):
         self.minsize(760, 400)
 
         self.mgr = DownloadManager(settings=Settings(), max_concurrent=3)
+        self.mgr.start_scheduler()        # honor any saved timed rules
         self.filter = "All"
 
         self._build_toolbar()
         self._build_body()
         self._build_statusbar()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh()
+
+    def _on_close(self):
+        self.mgr.stop_scheduler()
+        self.destroy()
 
     # ---- UI construction -------------------------------------------------
     def _build_toolbar(self):
@@ -177,16 +332,22 @@ class App(tk.Tk):
         defs = [
             ("＋ Add URL", self.on_add),
             ("▶ Resume", self.on_resume),
-            ("❚❚ Pause", self.on_pause),
+            ("⏹ Stop/Pause", self.on_pause),
             ("✕ Remove", self.on_remove),
             ("🗑 Clear finished", self.on_clear),
             ("📂 Open folder", self.on_open_folder),
+            ("⏱ Scheduler", self.on_scheduler),
             ("⚙ Settings", self.on_settings),
         ]
         for text, cmd in defs:
             ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=2)
         ttk.Button(bar, text="⏸ Pause all", command=lambda: (self.mgr.pause_all(), self._refresh())).pack(side="right", padx=2)
         ttk.Button(bar, text="⏵ Resume all", command=lambda: (self.mgr.resume_all(), self._refresh())).pack(side="right", padx=2)
+        # Quick global speed-limit box (blank/0 = unlimited).
+        self.glim_var = tk.StringVar()
+        ttk.Button(bar, text="Apply", command=self.on_apply_global_limit).pack(side="right", padx=(2, 8))
+        ttk.Entry(bar, textvariable=self.glim_var, width=8).pack(side="right")
+        ttk.Label(bar, text="Global limit:").pack(side="right", padx=(8, 2))
 
     def _build_body(self):
         body = ttk.Panedwindow(self, orient="horizontal")
@@ -221,7 +382,8 @@ class App(tk.Tk):
         # row context menu + double-click
         self.menu = tk.Menu(self, tearoff=0)
         self.menu.add_command(label="Resume", command=self.on_resume)
-        self.menu.add_command(label="Pause", command=self.on_pause)
+        self.menu.add_command(label="Stop / Pause", command=self.on_pause)
+        self.menu.add_command(label="Set speed limit…", command=self.on_set_limit)
         self.menu.add_separator()
         self.menu.add_command(label="Open folder", command=self.on_open_folder)
         self.menu.add_command(label="Copy URL", command=self.on_copy_url)
@@ -326,6 +488,40 @@ class App(tk.Tk):
     def on_settings(self):
         dlg = SettingsDialog(self, self.mgr)
         self.wait_window(dlg)
+        self._refresh()
+
+    def on_scheduler(self):
+        dlg = SchedulerDialog(self, self.mgr)
+        self.wait_window(dlg)
+
+    def on_apply_global_limit(self):
+        try:
+            self.mgr.set_global_rate(parse_rate(self.glim_var.get()))
+        except ValueError:
+            messagebox.showwarning(__app_name__, "Couldn't parse that speed limit.")
+            return
+        rate = self.mgr.global_rate_bps
+        self.status.set(f"Global speed limit: {format_rate(rate)}")
+
+    def on_set_limit(self):
+        ids = self._selected_ids()
+        if not ids:
+            return
+        it = self.mgr.items.get(ids[0])
+        cur = format_rate(it.max_rate_bps).replace("/s", "") if it and it.max_rate_bps else ""
+        val = simpledialog.askstring(
+            __app_name__,
+            "Speed limit for this download (e.g. 500k, 2m; blank = unlimited):",
+            initialvalue=cur, parent=self)
+        if val is None:
+            return
+        try:
+            rate = parse_rate(val)
+        except ValueError:
+            messagebox.showwarning(__app_name__, "Couldn't parse that speed limit.")
+            return
+        for i in ids:
+            self.mgr.set_item_rate(i, rate)
         self._refresh()
 
     # ---- live refresh ----------------------------------------------------
