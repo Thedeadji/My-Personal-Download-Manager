@@ -60,11 +60,14 @@ def _progress_printer():
 
 def cmd_get(args) -> int:
     from .ratelimit import parse_rate
+    from .config import resolve_user_agent
     settings = Settings.from_env()
     if args.connections:
         settings.connections = args.connections
     if args.output_dir:
         settings.output_dir = args.output_dir
+    if args.ua:
+        settings.user_agent = resolve_user_agent(args.ua)
     if args.limit:
         try:
             settings.max_rate_bps = parse_rate(args.limit)
@@ -84,9 +87,12 @@ def cmd_get(args) -> int:
 
 
 def cmd_grab(args) -> int:
+    from .config import resolve_user_agent
     settings = Settings.from_env()
     if args.connections:
         settings.connections = args.connections
+    if args.ua:
+        settings.user_agent = resolve_user_agent(args.ua)
 
     last = {"n": 0}
 
@@ -145,6 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("-d", "--output-dir", help="output directory")
     g.add_argument("-n", "--connections", type=int, help="number of parallel connections")
     g.add_argument("-l", "--limit", help='speed limit, e.g. "500k", "1.5m" (0/omit = unlimited)')
+    g.add_argument("--ua", help='User-Agent: "browser" for a Chrome UA, or a custom string '
+                                "(default: honest MPDM UA)")
     g.add_argument("-q", "--quiet", action="store_true")
     g.set_defaults(func=cmd_get)
 
@@ -154,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     gr.add_argument("-t", "--type", choices=["auto", "hls", "dash"], default="auto")
     gr.add_argument("--quality", default="best", help='"best", "worst", or a hint like "720"')
     gr.add_argument("-n", "--connections", type=int, help="parallel segment downloads")
+    gr.add_argument("--ua", help='User-Agent: "browser" for a Chrome UA, or a custom string')
     gr.add_argument("-q", "--quiet", action="store_true")
     gr.set_defaults(func=cmd_grab)
 

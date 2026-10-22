@@ -53,6 +53,10 @@ python -m mpdm get "https://example.com/big.zip" -o "C:\Users\me\Downloads\big.z
 # Cap the download speed (per download). Accepts 500k, 1.5m, 2g, or raw bytes.
 python -m mpdm get "https://example.com/big.zip" -l 500k
 
+# Some servers reject non-browser clients (HTTP 403). Opt into a browser
+# User-Agent (or pass any custom string). Default stays an honest MPDM UA.
+python -m mpdm get "https://example.com/big.zip" --ua browser
+
 # Grab an HLS stream to MP4 (needs ffmpeg)
 python -m mpdm grab "https://example.com/playlist.m3u8" -o movie.mp4 --quality 720
 

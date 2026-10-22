@@ -7,6 +7,31 @@ from pathlib import Path
 
 APP_DIRNAME = ".mypersonaldownloadmanager"
 
+# Our honest default identifier.
+DEFAULT_USER_AGENT = "MyPersonalDownloadManager/0.1 (+research)"
+# A realistic desktop-Chrome UA, used only when the user opts in because a server
+# rejects non-browser clients (some hosts 403 an honest UA). Off by default.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def resolve_user_agent(value) -> str:
+    """Map a UA choice to a header string.
+
+    None/"" -> honest default; "browser"/"chrome" -> the browser preset;
+    anything else is used verbatim as a custom User-Agent.
+    """
+    if value is None:
+        return DEFAULT_USER_AGENT
+    v = str(value).strip()
+    if not v or v.lower() in ("default", "honest"):
+        return DEFAULT_USER_AGENT
+    if v.lower() in ("browser", "chrome"):
+        return BROWSER_USER_AGENT
+    return v
+
 
 def default_download_dir() -> Path:
     """Pick a sensible default output directory cross-platform."""
@@ -41,8 +66,9 @@ class Settings:
     # Per-download speed limit in bytes/sec (0 = unlimited). Shared across this
     # download's segment workers, so it caps their combined rate.
     max_rate_bps: int = 0
-    # Identify ourselves honestly rather than impersonating a browser.
-    user_agent: str = "MyPersonalDownloadManager/0.1 (+research)"
+    # Identify ourselves honestly by default; can be overridden (e.g. a browser
+    # UA) for servers that reject non-browser clients. See resolve_user_agent().
+    user_agent: str = DEFAULT_USER_AGENT
     # Default output directory.
     output_dir: str = field(default_factory=lambda: str(default_download_dir()))
     # Verify TLS certificates (leave True; exposed for testing only).
@@ -64,4 +90,6 @@ class Settings:
         if os.environ.get("MDM_MAX_RATE"):
             from .ratelimit import parse_rate
             s.max_rate_bps = parse_rate(os.environ["MDM_MAX_RATE"])
+        if os.environ.get("MDM_USER_AGENT"):
+            s.user_agent = resolve_user_agent(os.environ["MDM_USER_AGENT"])
         return s
