@@ -246,6 +246,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ media: m ? [...m.values()] : [] });
     return true;
   }
+  if (msg.type === "clearMedia") {
+    const tabId = sender.tab ? sender.tab.id : msg.tabId;
+    if (tabId != null) clearTabMedia(tabId);
+    sendResponse({ ok: true });
+    return true;
+  }
   if (msg.type === "downloadMedia" && msg.url) {
     const stream = !!msg.stream || isStreamUrl(msg.url, msg.ctype);
     let filename = msg.filename || filenameFromUrl(msg.url) || "video";

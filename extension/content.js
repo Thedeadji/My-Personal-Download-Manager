@@ -107,6 +107,8 @@
       return;
     }
     ensureUI();
+    // SPA sites (YouTube, etc.) can detach our host during re-renders — reattach.
+    if (host && !host.isConnected) (document.documentElement || document.body).append(host);
     host.style.display = "";
     fab.textContent = "⬇ " + items.length + (items.length === 1 ? " media" : " media");
     panel.style.display = collapsed ? "none" : "block";
@@ -149,6 +151,21 @@
       if (!enabled && host) host.style.display = "none"; else refresh();
     }
   });
+
+  // Handle SPA navigation (History API): the content script keeps running but
+  // the "page" changed, so reset and re-scan a few times to catch new media.
+  let lastHref = location.href;
+  function onNav() {
+    hiddenForPage = false;
+    collapsed = true;
+    items = [];
+    if (host) host.style.display = "none";
+    send({ type: "clearMedia" });               // drop the previous page's sniffed media
+    [500, 1500, 3000].forEach((ms) => setTimeout(refresh, ms));
+  }
+  setInterval(() => {
+    if (location.href !== lastHref) { lastHref = location.href; onNav(); }
+  }, 700);
 
   let t = null;
   const mo = new MutationObserver(() => { clearTimeout(t); t = setTimeout(refresh, 800); });
