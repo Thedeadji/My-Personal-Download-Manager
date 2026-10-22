@@ -99,6 +99,15 @@ class Download:
         """Change this download's speed limit (bytes/sec, 0 = unlimited) live."""
         self._limiter.set_rate(rate_bps)
 
+    def _interruptible_sleep(self, duration: float):
+        """Sleep up to `duration`, but wake early if paused or cancelled."""
+        end = time.time() + duration
+        while True:
+            remaining = end - time.time()
+            if remaining <= 0 or self._cancel.is_set() or self._pause.is_set():
+                return
+            time.sleep(min(0.1, remaining))
+
     # ---- helpers ---------------------------------------------------------
     def _throttle(self, nbytes: int):
         """Block as needed to honor the per-download and global speed limits."""
@@ -190,7 +199,7 @@ class Download:
                     attempt += 1
                     if attempt > self.settings.max_retries:
                         raise DownloadError(f"segment {seg.index} failed: {e}") from e
-                    time.sleep(self.settings.retry_backoff ** attempt)
+                    self._interruptible_sleep(self.settings.retry_backoff ** attempt)
         finally:
             with self._lock:
                 self._active -= 1
@@ -233,7 +242,7 @@ class Download:
                     raise DownloadError(f"single-stream download failed: {e}") from e
                 resume_from = os.path.getsize(self.dest_path) if os.path.exists(self.dest_path) else resume_from
                 mode = "r+b"
-                time.sleep(self.settings.retry_backoff ** attempt)
+                self._interruptible_sleep(self.settings.retry_backoff ** attempt)
 
     # ---- orchestration ---------------------------------------------------
     def start(self) -> str:

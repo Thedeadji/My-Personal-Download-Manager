@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 try:
     import tkinter as tk
@@ -314,6 +315,8 @@ class App(tk.Tk):
         self.mgr = DownloadManager(settings=Settings(), max_concurrent=3)
         self.mgr.start_scheduler()        # honor any saved timed rules
         self.filter = "All"
+        # id -> (transient label, requested_at) for instant pause/resume feedback
+        self._pending: dict[str, tuple] = {}
 
         self._build_toolbar()
         self._build_body()
@@ -422,6 +425,19 @@ class App(tk.Tk):
     def _selected_ids(self):
         return list(self.tree.selection())
 
+    def _status_label(self, it) -> str:
+        """Status text, showing a transient 'Pausing…/Resuming…' after a click."""
+        pend = self._pending.get(it.id)
+        if pend:
+            label, t0 = pend
+            reached = (label.startswith("Pausing") and it.status in (ST_PAUSED, ST_ERROR, ST_COMPLETED)) \
+                or (label.startswith("Resuming") and it.status == ST_DOWNLOADING and it.speed)
+            if reached or (time.time() - t0) > 8:
+                self._pending.pop(it.id, None)
+            else:
+                return label
+        return STATUS_LABEL.get(it.status, it.status)
+
     def _update_buttons(self):
         """Enable/disable toolbar buttons based on the current selection."""
         items = [self.mgr.items.get(i) for i in self._selected_ids()]
@@ -461,11 +477,17 @@ class App(tk.Tk):
 
     def on_resume(self):
         for i in self._selected_ids():
+            it = self.mgr.items.get(i)
+            if it and it.status in (ST_PAUSED, ST_ERROR):
+                self._pending[i] = ("Resuming…", time.time())
             self.mgr.resume(i)
         self._refresh()
 
     def on_pause(self):
         for i in self._selected_ids():
+            it = self.mgr.items.get(i)
+            if it and it.status in (ST_DOWNLOADING, ST_QUEUED):
+                self._pending[i] = ("Pausing…", time.time())
             self.mgr.pause(i)
         self._refresh()
 
@@ -561,7 +583,7 @@ class App(tk.Tk):
                 it.filename or it.url,
                 human(it.size),
                 f"{it.percent:.0f}%" if it.percent is not None else "—",
-                STATUS_LABEL.get(it.status, it.status),
+                self._status_label(it),
                 (human(it.speed) + "/s") if it.status == ST_DOWNLOADING and it.speed else "—",
                 human_time(it.eta) if it.status == ST_DOWNLOADING else "—",
             )
@@ -592,7 +614,7 @@ class App(tk.Tk):
         else:
             self.detail.set("")
         self._update_buttons()
-        self.after(500, self._refresh)
+        self.after(250, self._refresh)
 
 
 def sys_is_mac() -> bool:
