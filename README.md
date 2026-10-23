@@ -21,6 +21,11 @@ work internally.
   stream.
 - **Speed limiting** — cap the rate per download or globally across all
   downloads, adjustable while a download runs (token-bucket throttle).
+- **Batch / wildcard URLs** — expand patterns like `img[1-100].jpg`,
+  `f[001-010].zip`, `ch[a-e]/[1-3].ts`, or a pasted list, into many downloads.
+- **Proxy support** — route requests through an HTTP/SOCKS proxy.
+- **Finish actions** — run a program, sleep, or shut down when the queue is done.
+- **Clipboard monitoring** — the desktop app can offer to grab copied links.
 - **Scheduler** — start/pause the queue or change the global speed limit at set
   times (daily windows or a one-shot), e.g. download only during off-peak hours.
 - **Integrity check** — final file size is verified against `Content-Length`.
@@ -58,6 +63,12 @@ python -m mpdm get "https://example.com/big.zip" -l 500k
 # Some servers reject non-browser clients (HTTP 403). Opt into a browser
 # User-Agent (or pass any custom string). Default stays an honest MPDM UA.
 python -m mpdm get "https://example.com/big.zip" --ua browser
+
+# Batch/wildcard: download many at once (expands the [a-b] ranges)
+python -m mpdm get "https://example.com/img[1-50].jpg"
+
+# Through a proxy
+python -m mpdm get "https://example.com/big.zip" --proxy http://127.0.0.1:8080
 
 # Grab an HLS stream to MP4 (needs ffmpeg)
 python -m mpdm grab "https://example.com/playlist.m3u8" -o movie.mp4 --quality 720

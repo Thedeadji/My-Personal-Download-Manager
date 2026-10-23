@@ -122,6 +122,7 @@ class SettingsDialog(tk.Toplevel):
         self.title("Settings")
         self.resizable(False, False)
         self.mgr = mgr
+        self.app = parent
         self.transient(parent)
         self.grab_set()
         frm = ttk.Frame(self, padding=12)
@@ -154,6 +155,10 @@ class SettingsDialog(tk.Toplevel):
         self.categorize = tk.BooleanVar(value=mgr.settings.categorize)
         ttk.Checkbutton(frm, text="Sort downloads into type folders (Video, Music, Documents, Compressed, Programs)",
                         variable=self.categorize).grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
+        self.clip = tk.BooleanVar(value=getattr(parent, "clip_monitor", False))
+        ttk.Checkbutton(frm, text="Monitor clipboard — offer to download copied links",
+                        variable=self.clip).grid(row=6, column=1, sticky="w", pady=(10, 0))
 
         self.ua_browser = tk.BooleanVar(value=(mgr.settings.user_agent == BROWSER_USER_AGENT))
         ttk.Checkbutton(frm, text="Send browser User-Agent (for sites that block non-browsers)",
@@ -200,6 +205,8 @@ class SettingsDialog(tk.Toplevel):
         self.mgr.settings.proxy = self.proxy.get().strip()
         action = next((a for l, a in self._DONE if l == self.done_sel.get()), "none")
         self.mgr.set_on_complete(action, self.done_cmd.get().strip())
+        if self.app is not None:
+            self.app.clip_monitor = bool(self.clip.get())
         # Global speed limit.
         try:
             self.mgr.set_global_rate(parse_rate(self.glim.get()))
@@ -345,12 +352,37 @@ class App(tk.Tk):
         self.filter = "All"
         # id -> (transient label, requested_at) for instant pause/resume feedback
         self._pending: dict[str, tuple] = {}
+        # Clipboard monitoring (IDM-style): offer to download copied links.
+        self.clip_monitor = False
+        self._clip_last = None
+        self._clip_seen: set[str] = set()
 
         self._build_toolbar()
         self._build_body()
         self._build_statusbar()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh()
+        self.after(1200, self._poll_clipboard)
+
+    def _poll_clipboard(self):
+        try:
+            if self.clip_monitor:
+                try:
+                    text = (self.clipboard_get() or "").strip()
+                except tk.TclError:
+                    text = ""
+                if (text and text != self._clip_last
+                        and text.lower().startswith(("http://", "https://", "ftp://"))):
+                    self._clip_last = text
+                    already = any(it.url == text for it in self.mgr.items.values())
+                    if text not in self._clip_seen and not already:
+                        self._clip_seen.add(text)
+                        if messagebox.askyesno(__app_name__,
+                                               f"Download this copied link?\n\n{text[:200]}"):
+                            self.mgr.add(text, connections=self.mgr.settings.connections, start=True)
+                            self._refresh()
+        finally:
+            self.after(1200, self._poll_clipboard)
 
     def _on_close(self):
         self.mgr.stop_scheduler()
