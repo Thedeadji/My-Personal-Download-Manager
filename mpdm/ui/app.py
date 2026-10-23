@@ -166,8 +166,23 @@ class SettingsDialog(tk.Toplevel):
         ttk.Entry(frm, textvariable=self.ua_custom, width=52).grid(
             row=9, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
+        # When all downloads finish: do nothing / run a program / sleep / shut down.
+        ttk.Label(frm, text="When all downloads finish").grid(
+            row=10, column=0, sticky="w", pady=(10, 0))
+        self._DONE = [("Do nothing", "none"), ("Run a program…", "run"),
+                      ("Sleep", "sleep"), ("Shut down", "shutdown")]
+        labels = [d[0] for d in self._DONE]
+        cur_action = getattr(mgr, "on_done_action", "none")
+        self.done_sel = tk.StringVar(
+            value=next((l for l, a in self._DONE if a == cur_action), labels[0]))
+        ttk.Combobox(frm, textvariable=self.done_sel, values=labels, width=18,
+                     state="readonly").grid(row=11, column=0, sticky="w")
+        self.done_cmd = tk.StringVar(value=getattr(mgr, "on_done_command", ""))
+        ttk.Entry(frm, textvariable=self.done_cmd, width=30).grid(
+            row=11, column=1, sticky="ew", pady=(0, 0))
+
         btns = ttk.Frame(frm)
-        btns.grid(row=10, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        btns.grid(row=12, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right", padx=4)
         ttk.Button(btns, text="Save", command=self._save).pack(side="right")
         frm.columnconfigure(0, weight=1)
@@ -183,6 +198,8 @@ class SettingsDialog(tk.Toplevel):
         self.mgr.max_concurrent = max(1, int(self.maxc.get()))
         self.mgr.settings.categorize = bool(self.categorize.get())
         self.mgr.settings.proxy = self.proxy.get().strip()
+        action = next((a for l, a in self._DONE if l == self.done_sel.get()), "none")
+        self.mgr.set_on_complete(action, self.done_cmd.get().strip())
         # Global speed limit.
         try:
             self.mgr.set_global_rate(parse_rate(self.glim.get()))

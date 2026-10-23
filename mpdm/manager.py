@@ -102,7 +102,59 @@ class DownloadManager:
             store=state_dir() / "schedule.json",
         )
         self.scheduler.load()
+        # Action to run once the whole queue finishes: none | run | sleep | shutdown.
+        self.on_done_action = "none"
+        self.on_done_command = ""
+        self._on_complete_fired = False
         self.load()
+
+    # ---- "when everything finishes" action -------------------------------
+    def set_on_complete(self, action: str, command: str = ""):
+        """Run a program / sleep / shut down when all downloads finish."""
+        self.on_done_action = action if action in ("none", "run", "sleep", "shutdown") else "none"
+        self.on_done_command = command or ""
+        self._on_complete_fired = False
+
+    def _queue_all_done(self) -> bool:
+        """True if nothing is active/queued and at least one download completed."""
+        statuses = [it.status for it in self.items.values()]
+        if any(s in (ST_DOWNLOADING, ST_QUEUED) for s in statuses):
+            return False
+        return any(s == ST_COMPLETED for s in statuses)
+
+    def _maybe_on_complete(self):
+        if self.on_done_action == "none":
+            return
+        with self._lock:
+            if self._on_complete_fired or not self._queue_all_done():
+                return
+            self._on_complete_fired = True
+            action, cmd = self.on_done_action, self.on_done_command
+        self._run_completion_action(action, cmd)
+
+    def _run_completion_action(self, action: str, command: str):
+        import subprocess
+        import sys
+        try:
+            if action == "run" and command:
+                subprocess.Popen(command, shell=True)
+            elif action == "shutdown":
+                if os.name == "nt":
+                    subprocess.Popen(["shutdown", "/s", "/t", "60"])  # cancel with: shutdown /a
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["osascript", "-e",
+                                      'tell application "System Events" to shut down'])
+                else:
+                    subprocess.Popen(["shutdown", "-h", "+1"])
+            elif action == "sleep":
+                if os.name == "nt":
+                    subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["pmset", "sleepnow"])
+                else:
+                    subprocess.Popen(["systemctl", "suspend"])
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---- scheduling (thin wrappers over self.scheduler) ------------------
     def start_scheduler(self):
@@ -218,6 +270,8 @@ class DownloadManager:
                 return
             slots = self.max_concurrent - self.active_count()
             to_start = [it for it in self.ordered() if it.status == ST_QUEUED][:slots]
+            if to_start:
+                self._on_complete_fired = False   # new work -> allow the action to fire again
             for it in to_start:
                 it.status = ST_DOWNLOADING
                 t = threading.Thread(target=self._run, args=(it,), daemon=True)
@@ -271,6 +325,7 @@ class DownloadManager:
             item._dl = None
             self.save()
             self.pump()
+            self._maybe_on_complete()
 
     def pause(self, item_id: str):
         it = self.items.get(item_id)
