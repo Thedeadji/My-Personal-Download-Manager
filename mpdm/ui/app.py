@@ -160,6 +160,10 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(frm, text="Category folders…", command=self._edit_cat_dirs).grid(
             row=7, column=0, sticky="w", pady=(2, 0))
 
+        self.dynamic = tk.BooleanVar(value=getattr(mgr.settings, "dynamic_segmentation", True))
+        ttk.Checkbutton(frm, text="Dynamic segmentation (reuse idle connections)",
+                        variable=self.dynamic).grid(row=7, column=1, sticky="w", pady=(2, 0))
+
         self.clip = tk.BooleanVar(value=getattr(parent, "clip_monitor", False))
         ttk.Checkbutton(frm, text="Monitor clipboard — offer to download copied links",
                         variable=self.clip).grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
@@ -212,6 +216,7 @@ class SettingsDialog(tk.Toplevel):
         self.mgr.settings.connections = max(1, int(self.conn.get()))
         self.mgr.max_concurrent = max(1, int(self.maxc.get()))
         self.mgr.settings.categorize = bool(self.categorize.get())
+        self.mgr.settings.dynamic_segmentation = bool(self.dynamic.get())
         self.mgr.settings.proxy = self.proxy.get().strip()
         self.mgr.settings.category_dirs = dict(self._cat_dirs)
         action = next((a for l, a in self._DONE if l == self.done_sel.get()), "none")

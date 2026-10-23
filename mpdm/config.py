@@ -70,6 +70,9 @@ class Settings:
     # Sort finished downloads into IDM-style subfolders by type (Video, Music,
     # Documents, Compressed, Programs); "Other" types stay in output_dir.
     categorize: bool = True
+    # Dynamic segmentation: when a connection finishes, split the segment with the
+    # most bytes left and steal half, so no connection goes idle before the end.
+    dynamic_segmentation: bool = True
     # Identify ourselves honestly by default; can be overridden (e.g. a browser
     # UA) for servers that reject non-browser clients. See resolve_user_agent().
     user_agent: str = DEFAULT_USER_AGENT
@@ -110,6 +113,8 @@ def apply_env(s: "Settings") -> "Settings":
         s.categorize = os.environ["MDM_CATEGORIZE"].strip().lower() not in ("0", "false", "no", "")
     if os.environ.get("MDM_PROXY"):
         s.proxy = os.environ["MDM_PROXY"].strip()
+    if os.environ.get("MDM_DYNAMIC"):
+        s.dynamic_segmentation = os.environ["MDM_DYNAMIC"].strip().lower() not in ("0", "false", "no", "")
     return s
 
 

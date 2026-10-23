@@ -19,7 +19,6 @@ from __future__ import annotations
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 import requests
@@ -178,7 +177,9 @@ class Download:
                     return
                 try:
                     start = seg.current_offset
-                    resp = open_range(self.url, start, seg.end, self.settings, self._session)
+                    with self._lock:
+                        end = seg.end
+                    resp = open_range(self.url, start, end, self.settings, self._session)
                     with open(self.dest_path, "r+b") as f:
                         f.seek(start)
                         for chunk in resp.iter_content(self.settings.chunk_size):
@@ -187,15 +188,26 @@ class Download:
                                 return
                             if not chunk:
                                 continue
+                            # Honour the segment's current end — a dynamic split may
+                            # have shrunk it, so never write past what we still own.
+                            with self._lock:
+                                remaining = seg.end - seg.current_offset + 1
+                            if remaining <= 0:
+                                break
+                            if len(chunk) > remaining:
+                                chunk = chunk[:remaining]
                             f.write(chunk)
                             with self._lock:
                                 seg.downloaded += len(chunk)
                             self._throttle(len(chunk))
                             self._emit()
+                            if seg.complete:
+                                break
                     resp.close()
                     if seg.complete:
                         return
-                    # Stream ended early; loop will re-request the remainder.
+                    # Stream ended early (or we were split); loop re-requests the
+                    # remainder from the new current offset / end.
                 except (requests.RequestException, OSError) as e:
                     attempt += 1
                     if attempt > self.settings.max_retries:
@@ -204,6 +216,32 @@ class Download:
         finally:
             with self._lock:
                 self._active -= 1
+
+    def _claim_or_split(self) -> Optional[Segment]:
+        """Return a segment for a free worker: an unclaimed one, else half of the
+        segment with the most bytes left (dynamic segmentation). None = no work."""
+        with self._lock:
+            for s in self.segments:
+                if id(s) not in self._claimed and not s.complete:
+                    self._claimed.add(id(s))
+                    return s
+            if not self.settings.dynamic_segmentation:
+                return None
+            # Steal half of the largest in-progress segment, if it's worth it.
+            victim = max((s for s in self.segments if not s.complete),
+                         key=lambda s: s.remaining, default=None)
+            if victim is None or victim.remaining < 2 * self.settings.min_segment_size:
+                return None
+            cur = victim.current_offset
+            rem = victim.end - cur + 1
+            new_start = cur + rem // 2
+            old_end = victim.end
+            victim.end = new_start - 1                 # shrink the victim
+            self._seg_counter += 1
+            newseg = Segment(index=self._seg_counter, start=new_start, end=old_end)
+            self.segments.append(newseg)
+            self._claimed.add(id(newseg))
+            return newseg
 
     def _download_single_stream(self):
         """Fallback when ranges aren't supported or size is unknown."""
@@ -310,16 +348,32 @@ class Download:
         ckpt = threading.Thread(target=_checkpoint, daemon=True)
         ckpt.start()
 
+        # Work-stealing pool: up to `connections` workers each claim a segment and,
+        # when free, split the largest remaining one (dynamic segmentation).
+        self._claimed = set()
+        self._seg_counter = max((s.index for s in self.segments), default=-1)
+        incomplete = sum(1 for s in self.segments if not s.complete)
+        nworkers = max(1, min(self.settings.connections, incomplete))
+
         errors = []
+
+        def _worker():
+            while not (self._cancel.is_set() or self._pause.is_set()):
+                seg = self._claim_or_split()
+                if seg is None:
+                    return
+                try:
+                    self._download_segment(seg)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(e)
+                    return
+
+        workers = [threading.Thread(target=_worker, daemon=True) for _ in range(nworkers)]
         try:
-            with ThreadPoolExecutor(max_workers=len(self.segments)) as pool:
-                futures = {pool.submit(self._download_segment, s): s
-                           for s in self.segments if not s.complete}
-                for fut in as_completed(futures):
-                    try:
-                        fut.result()
-                    except Exception as e:  # noqa: BLE001
-                        errors.append(e)
+            for t in workers:
+                t.start()
+            for t in workers:
+                t.join()
         finally:
             stop_ckpt.set()
             ckpt.join(timeout=2.0)

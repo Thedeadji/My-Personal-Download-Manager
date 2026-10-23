@@ -14,6 +14,9 @@ work internally.
 - **Segmented downloading** — splits a file into N byte-ranges (HTTP `Range`
   requests, RFC 7233) and fetches them over parallel connections, writing each
   piece directly to its offset in a pre-allocated file (no temp-file merge).
+- **Dynamic segmentation** — when a connection finishes early, it splits the
+  segment with the most bytes left and steals half, so no connection sits idle
+  before the download ends (toggle in Settings).
 - **Resume** — per-segment progress is checkpointed to a `<file>.mpdm` sidecar,
   so an interrupted download continues instead of restarting. Resume is only
   reused when the server's size + `ETag` still match.
