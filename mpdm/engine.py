@@ -261,7 +261,8 @@ class Download:
             # Route into an IDM-style category subfolder (Video, Music, …) by
             # file type when enabled; "Other" types stay in output_dir.
             out_dir = categorized_dir(self.settings.output_dir, self.info.filename,
-                                      self.settings.categorize)
+                                      self.settings.categorize,
+                                      getattr(self.settings, "category_dirs", None))
             os.makedirs(out_dir, exist_ok=True)
             resumable = storage.find_resumable(
                 out_dir, self.url, self.info.size, self.info.etag

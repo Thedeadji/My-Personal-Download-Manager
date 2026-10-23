@@ -158,7 +158,8 @@ def _run_job(job: dict) -> None:
         from .categories import categorized_dir
         from . import storage
         fname = sanitize_filename(job["filename"])
-        out_dir = categorized_dir(settings.output_dir, fname, settings.categorize)
+        out_dir = categorized_dir(settings.output_dir, fname, settings.categorize,
+                                  getattr(settings, "category_dirs", None))
         os.makedirs(out_dir, exist_ok=True)
         dest = storage.unique_dest(out_dir, fname)
 

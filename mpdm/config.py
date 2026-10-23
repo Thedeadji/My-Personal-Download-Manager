@@ -1,6 +1,7 @@
 """Configuration and defaults for MPDM."""
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -79,27 +80,67 @@ class Settings:
     # Optional proxy for all requests, e.g. "http://host:8080" or
     # "socks5://host:1080" (empty = direct / honor system env proxies).
     proxy: str = ""
+    # Per-category destination overrides, e.g. {"Video": "D:/Movies"}. Absolute
+    # paths used as-is; relative joined to output_dir. Empty = default subfolders.
+    category_dirs: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_env(cls) -> "Settings":
-        s = cls()
-        if os.environ.get("MDM_CONNECTIONS"):
-            try:
-                s.connections = max(1, int(os.environ["MDM_CONNECTIONS"]))
-            except ValueError:
-                pass
-        if os.environ.get("MDM_OUTPUT_DIR"):
-            s.output_dir = os.environ["MDM_OUTPUT_DIR"]
-        if os.environ.get("MDM_MAX_RATE"):
-            from .ratelimit import parse_rate
-            s.max_rate_bps = parse_rate(os.environ["MDM_MAX_RATE"])
-        if os.environ.get("MDM_USER_AGENT"):
-            s.user_agent = resolve_user_agent(os.environ["MDM_USER_AGENT"])
-        if os.environ.get("MDM_CATEGORIZE"):
-            s.categorize = os.environ["MDM_CATEGORIZE"].strip().lower() not in ("0", "false", "no", "")
-        if os.environ.get("MDM_PROXY"):
-            s.proxy = os.environ["MDM_PROXY"].strip()
-        return s
+        return apply_env(cls())
+
+
+def apply_env(s: "Settings") -> "Settings":
+    """Overlay MDM_* environment variables onto a Settings (env wins)."""
+    if os.environ.get("MDM_CONNECTIONS"):
+        try:
+            s.connections = max(1, int(os.environ["MDM_CONNECTIONS"]))
+        except ValueError:
+            pass
+    if os.environ.get("MDM_OUTPUT_DIR"):
+        s.output_dir = os.environ["MDM_OUTPUT_DIR"]
+    if os.environ.get("MDM_MAX_RATE"):
+        from .ratelimit import parse_rate
+        s.max_rate_bps = parse_rate(os.environ["MDM_MAX_RATE"])
+    if os.environ.get("MDM_USER_AGENT"):
+        s.user_agent = resolve_user_agent(os.environ["MDM_USER_AGENT"])
+    if os.environ.get("MDM_CATEGORIZE"):
+        s.categorize = os.environ["MDM_CATEGORIZE"].strip().lower() not in ("0", "false", "no", "")
+    if os.environ.get("MDM_PROXY"):
+        s.proxy = os.environ["MDM_PROXY"].strip()
+    return s
+
+
+# ---- persisted preferences (settings.json) -------------------------------
+def _prefs_path() -> Path:
+    return state_dir() / "settings.json"
+
+
+def load_prefs() -> dict:
+    """Read the persisted preferences file, or {} if absent/invalid."""
+    try:
+        return json.loads(_prefs_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_prefs(prefs: dict) -> None:
+    try:
+        p = _prefs_path()
+        tmp = str(p) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(prefs, f, indent=2)
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
+def settings_from_prefs(prefs: dict) -> "Settings":
+    """Build Settings from defaults, overlaid by the prefs file, then env."""
+    s = Settings()
+    for k, v in (prefs.get("settings") or {}).items():
+        if k in Settings.__dataclass_fields__:
+            setattr(s, k, v)
+    return apply_env(s)

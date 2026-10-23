@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-from .config import Settings, state_dir
+from .config import Settings, state_dir, load_prefs, save_prefs, settings_from_prefs
 from .engine import Download, DownloadError
 from .models import Progress, Status
 from .ratelimit import RateLimiter
@@ -83,14 +83,17 @@ class DownloadItem:
 class DownloadManager:
     def __init__(self, settings: Optional[Settings] = None, max_concurrent: int = 3,
                  global_rate_bps: int = 0):
-        self.settings = settings or Settings()
-        self.max_concurrent = max_concurrent
+        prefs = load_prefs()
+        self.settings = settings or settings_from_prefs(prefs)
+        self.max_concurrent = int(prefs.get("max_concurrent", max_concurrent))
+        # Remembered per-session UI pref the GUI reads (clipboard monitoring).
+        self.clip_monitor_pref = bool(prefs.get("clip_monitor", False))
         self.items: dict[str, DownloadItem] = {}
         self._order: list[str] = []
         self._lock = threading.RLock()
         self._store = state_dir() / "downloads.json"
         # Shared across every running download so their combined rate is capped.
-        self._global_limiter = RateLimiter(global_rate_bps)
+        self._global_limiter = RateLimiter(prefs.get("global_rate_bps", global_rate_bps))
         # Time-based scheduler (pause/resume the queue, change the global rate).
         # Created and loaded here but not started until start_scheduler().
         self.scheduler = Scheduler(
@@ -103,10 +106,21 @@ class DownloadManager:
         )
         self.scheduler.load()
         # Action to run once the whole queue finishes: none | run | sleep | shutdown.
-        self.on_done_action = "none"
-        self.on_done_command = ""
+        self.on_done_action = prefs.get("on_done_action", "none")
+        self.on_done_command = prefs.get("on_done_command", "")
         self._on_complete_fired = False
         self.load()
+
+    def save_settings(self):
+        """Persist settings + manager-level prefs to settings.json."""
+        save_prefs({
+            "settings": self.settings.as_dict(),
+            "max_concurrent": self.max_concurrent,
+            "global_rate_bps": self.global_rate_bps,
+            "on_done_action": self.on_done_action,
+            "on_done_command": self.on_done_command,
+            "clip_monitor": getattr(self, "clip_monitor_pref", False),
+        })
 
     # ---- "when everything finishes" action -------------------------------
     def set_on_complete(self, action: str, command: str = ""):

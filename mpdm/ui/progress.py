@@ -82,7 +82,8 @@ class ProgressPopup:
                 if self.is_stream and not fname.lower().endswith((".mp4", ".mkv", ".webm")):
                     fname += ".mp4"
                 out_dir = categorized_dir(self.settings.output_dir, fname,
-                                          self.settings.categorize)
+                                          self.settings.categorize,
+                                          getattr(self.settings, "category_dirs", None))
                 os.makedirs(out_dir, exist_ok=True)
                 self._dest = storage.unique_dest(out_dir, fname)
             except OSError:

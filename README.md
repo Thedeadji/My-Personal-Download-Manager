@@ -30,7 +30,10 @@ work internally.
   times (daily windows or a one-shot), e.g. download only during off-peak hours.
 - **Integrity check** — final file size is verified against `Content-Length`.
 - **Auto-sort by type** — finished downloads are filed into IDM-style subfolders
-  (Video, Music, Documents, Compressed, Programs); toggle in Settings.
+  (Video, Music, Documents, Compressed, Programs); toggle in Settings, and point
+  any category at its own folder/drive (Settings → Category folders…).
+- **Persistent settings** — your preferences are saved to
+  `~/.mypersonaldownloadmanager/settings.json` and restored on the next launch.
 - **HLS/DASH grabber** — parses `.m3u8` / `.mpd` manifests, downloads the
   segments concurrently, and muxes them to MP4 via `ffmpeg`. **AES-128**
   encrypted HLS is supported (keys/IVs tracked per segment, with key rotation),

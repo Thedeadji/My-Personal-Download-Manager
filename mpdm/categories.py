@@ -51,9 +51,20 @@ def category_subdir(filename: str) -> str:
     return CATEGORY_FOLDER.get(classify(filename), "")
 
 
-def categorized_dir(base_dir: str, filename: str, enabled: bool = True) -> str:
-    """Resolve the save directory: base_dir, or base_dir/<Category> when enabled."""
+def categorized_dir(base_dir: str, filename: str, enabled: bool = True,
+                    overrides: dict = None) -> str:
+    """Resolve the save directory for a file.
+
+    When `enabled`, route by file type: a custom path from `overrides` (keyed by
+    category name, e.g. {"Video": "D:/Movies"}; absolute used as-is, relative
+    joined to base_dir), else base_dir/<default subfolder>. "Other" stays in
+    base_dir unless overridden.
+    """
     if not enabled:
         return base_dir
-    sub = category_subdir(filename)
+    cat = classify(filename)
+    if overrides and overrides.get(cat):
+        p = overrides[cat]
+        return p if os.path.isabs(p) else os.path.join(base_dir, p)
+    sub = CATEGORY_FOLDER.get(cat, "")
     return os.path.join(base_dir, sub) if sub else base_dir

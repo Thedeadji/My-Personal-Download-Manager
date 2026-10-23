@@ -35,6 +35,18 @@ def test_categorized_dir():
     assert categorized_dir(base, "a.mp4", enabled=False) == base  # disabled
 
 
+def test_categorized_dir_overrides():
+    base = os.path.join("C:", os.sep, "dl")
+    abs_movies = os.path.join("D:", os.sep, "Movies")
+    overrides = {"Video": abs_movies, "Audio": "tunes"}   # keyed by category name
+    # Absolute override used as-is.
+    assert categorized_dir(base, "a.mp4", overrides=overrides) == abs_movies
+    # Relative override joined to base.
+    assert categorized_dir(base, "a.mp3", overrides=overrides) == os.path.join(base, "tunes")
+    # Category with no override falls back to the default subfolder.
+    assert categorized_dir(base, "a.zip", overrides=overrides) == os.path.join(base, "Compressed")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

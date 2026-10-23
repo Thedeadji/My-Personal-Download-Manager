@@ -156,24 +156,28 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(frm, text="Sort downloads into type folders (Video, Music, Documents, Compressed, Programs)",
                         variable=self.categorize).grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
+        self._cat_dirs = dict(getattr(mgr.settings, "category_dirs", {}) or {})
+        ttk.Button(frm, text="Category folders…", command=self._edit_cat_dirs).grid(
+            row=7, column=0, sticky="w", pady=(2, 0))
+
         self.clip = tk.BooleanVar(value=getattr(parent, "clip_monitor", False))
         ttk.Checkbutton(frm, text="Monitor clipboard — offer to download copied links",
-                        variable=self.clip).grid(row=6, column=1, sticky="w", pady=(10, 0))
+                        variable=self.clip).grid(row=8, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         self.ua_browser = tk.BooleanVar(value=(mgr.settings.user_agent == BROWSER_USER_AGENT))
         ttk.Checkbutton(frm, text="Send browser User-Agent (for sites that block non-browsers)",
-                        variable=self.ua_browser).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                        variable=self.ua_browser).grid(row=9, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Label(frm, text="Custom User-Agent (optional; overrides the checkbox)").grid(
-            row=8, column=0, sticky="w", pady=(6, 0))
+            row=10, column=0, sticky="w", pady=(6, 0))
         custom = "" if mgr.settings.user_agent in (DEFAULT_USER_AGENT, BROWSER_USER_AGENT) \
             else mgr.settings.user_agent
         self.ua_custom = tk.StringVar(value=custom)
         ttk.Entry(frm, textvariable=self.ua_custom, width=52).grid(
-            row=9, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+            row=11, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
         # When all downloads finish: do nothing / run a program / sleep / shut down.
         ttk.Label(frm, text="When all downloads finish").grid(
-            row=10, column=0, sticky="w", pady=(10, 0))
+            row=12, column=0, sticky="w", pady=(10, 0))
         self._DONE = [("Do nothing", "none"), ("Run a program…", "run"),
                       ("Sleep", "sleep"), ("Shut down", "shutdown")]
         labels = [d[0] for d in self._DONE]
@@ -181,13 +185,13 @@ class SettingsDialog(tk.Toplevel):
         self.done_sel = tk.StringVar(
             value=next((l for l, a in self._DONE if a == cur_action), labels[0]))
         ttk.Combobox(frm, textvariable=self.done_sel, values=labels, width=18,
-                     state="readonly").grid(row=11, column=0, sticky="w")
+                     state="readonly").grid(row=13, column=0, sticky="w")
         self.done_cmd = tk.StringVar(value=getattr(mgr, "on_done_command", ""))
         ttk.Entry(frm, textvariable=self.done_cmd, width=30).grid(
-            row=11, column=1, sticky="ew", pady=(0, 0))
+            row=13, column=1, sticky="ew", pady=(0, 0))
 
         btns = ttk.Frame(frm)
-        btns.grid(row=12, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        btns.grid(row=14, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right", padx=4)
         ttk.Button(btns, text="Save", command=self._save).pack(side="right")
         frm.columnconfigure(0, weight=1)
@@ -197,16 +201,24 @@ class SettingsDialog(tk.Toplevel):
         if d:
             self.dir.set(d)
 
+    def _edit_cat_dirs(self):
+        dlg = CategoryDirsDialog(self, self._cat_dirs)
+        self.wait_window(dlg)
+        if dlg.result is not None:
+            self._cat_dirs = dlg.result
+
     def _save(self):
         self.mgr.settings.output_dir = self.dir.get().strip() or self.mgr.settings.output_dir
         self.mgr.settings.connections = max(1, int(self.conn.get()))
         self.mgr.max_concurrent = max(1, int(self.maxc.get()))
         self.mgr.settings.categorize = bool(self.categorize.get())
         self.mgr.settings.proxy = self.proxy.get().strip()
+        self.mgr.settings.category_dirs = dict(self._cat_dirs)
         action = next((a for l, a in self._DONE if l == self.done_sel.get()), "none")
         self.mgr.set_on_complete(action, self.done_cmd.get().strip())
         if self.app is not None:
             self.app.clip_monitor = bool(self.clip.get())
+            self.mgr.clip_monitor_pref = bool(self.clip.get())
         # Global speed limit.
         try:
             self.mgr.set_global_rate(parse_rate(self.glim.get()))
@@ -221,7 +233,50 @@ class SettingsDialog(tk.Toplevel):
             self.mgr.settings.user_agent = BROWSER_USER_AGENT
         else:
             self.mgr.settings.user_agent = DEFAULT_USER_AGENT
+        self.mgr.save_settings()   # persist everything above to settings.json
         self.mgr.pump()
+        self.destroy()
+
+
+class CategoryDirsDialog(tk.Toplevel):
+    """Set a custom destination folder per category (blank = default subfolder)."""
+
+    # (category key, label shown) — key must match classify()'s category.
+    CATS = [("Video", "Video"), ("Audio", "Audio (Music)"), ("Documents", "Documents"),
+            ("Archives", "Archives (Compressed)"), ("Programs", "Programs")]
+
+    def __init__(self, parent, current: dict):
+        super().__init__(parent)
+        self.title("Category folders")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.result = None
+        frm = ttk.Frame(self, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Leave blank to use the default subfolder under your download folder.",
+                  foreground="#666").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self.vars = {}
+        for i, (cat, label) in enumerate(self.CATS, start=1):
+            ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=2)
+            v = tk.StringVar(value=(current or {}).get(cat, ""))
+            self.vars[cat] = v
+            ttk.Entry(frm, textvariable=v, width=40).grid(row=i, column=1, sticky="ew", padx=6)
+            ttk.Button(frm, text="…", width=3,
+                       command=lambda c=cat: self._browse(c)).grid(row=i, column=2)
+        btns = ttk.Frame(frm)
+        btns.grid(row=len(self.CATS) + 1, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="OK", command=self._ok).pack(side="right")
+        frm.columnconfigure(1, weight=1)
+
+    def _browse(self, cat):
+        d = filedialog.askdirectory(parent=self)
+        if d:
+            self.vars[cat].set(d)
+
+    def _ok(self):
+        self.result = {c: v.get().strip() for c, v in self.vars.items() if v.get().strip()}
         self.destroy()
 
 
@@ -353,7 +408,7 @@ class App(tk.Tk):
         # id -> (transient label, requested_at) for instant pause/resume feedback
         self._pending: dict[str, tuple] = {}
         # Clipboard monitoring (IDM-style): offer to download copied links.
-        self.clip_monitor = False
+        self.clip_monitor = bool(getattr(self.mgr, "clip_monitor_pref", False))
         self._clip_last = None
         self._clip_seen: set[str] = set()
 
