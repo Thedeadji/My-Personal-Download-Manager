@@ -68,22 +68,36 @@ def cmd_get(args) -> int:
         settings.output_dir = args.output_dir
     if args.ua:
         settings.user_agent = resolve_user_agent(args.ua)
+    if args.proxy:
+        settings.proxy = args.proxy
     if args.limit:
         try:
             settings.max_rate_bps = parse_rate(args.limit)
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 2
-    cb = None if args.quiet else _progress_printer()
-    dl = Download(args.url, settings=settings, dest_path=args.output, progress_cb=cb)
-    t0 = time.time()
-    try:
-        path = dl.start()
-    except Exception as e:  # noqa: BLE001
-        print(f"\nError: {e}", file=sys.stderr)
-        return 1
-    print(f"Saved to {path}  ({_human_time(time.time() - t0)})")
-    return 0
+    from .batch import expand_urls
+    urls = expand_urls(args.url)
+    if len(urls) > 1 and args.output:
+        print("Error: -o/--output can't be used with a multi-URL pattern.", file=sys.stderr)
+        return 2
+
+    rc = 0
+    for i, url in enumerate(urls, 1):
+        if len(urls) > 1 and not args.quiet:
+            print(f"[{i}/{len(urls)}] {url}")
+        cb = None if args.quiet else _progress_printer()
+        dl = Download(url, settings=settings,
+                      dest_path=args.output if len(urls) == 1 else None, progress_cb=cb)
+        t0 = time.time()
+        try:
+            path = dl.start()
+        except Exception as e:  # noqa: BLE001
+            print(f"\nError: {e}", file=sys.stderr)
+            rc = 1
+            continue
+        print(f"Saved to {path}  ({_human_time(time.time() - t0)})")
+    return rc
 
 
 def cmd_grab(args) -> int:
@@ -93,6 +107,8 @@ def cmd_grab(args) -> int:
         settings.connections = args.connections
     if args.ua:
         settings.user_agent = resolve_user_agent(args.ua)
+    if args.proxy:
+        settings.proxy = args.proxy
 
     last = {"n": 0}
 
@@ -153,6 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("-l", "--limit", help='speed limit, e.g. "500k", "1.5m" (0/omit = unlimited)')
     g.add_argument("--ua", help='User-Agent: "browser" for a Chrome UA, or a custom string '
                                 "(default: honest MPDM UA)")
+    g.add_argument("--proxy", help='proxy URL, e.g. "http://host:8080" or "socks5://host:1080"')
     g.add_argument("-q", "--quiet", action="store_true")
     g.set_defaults(func=cmd_get)
 
@@ -163,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     gr.add_argument("--quality", default="best", help='"best", "worst", or a hint like "720"')
     gr.add_argument("-n", "--connections", type=int, help="parallel segment downloads")
     gr.add_argument("--ua", help='User-Agent: "browser" for a Chrome UA, or a custom string')
+    gr.add_argument("--proxy", help='proxy URL, e.g. "http://host:8080"')
     gr.add_argument("-q", "--quiet", action="store_true")
     gr.set_defaults(func=cmd_grab)
 

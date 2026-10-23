@@ -146,6 +146,11 @@ class SettingsDialog(tk.Toplevel):
         self.glim = tk.StringVar(value="" if not cur else format_rate(cur).replace("/s", ""))
         ttk.Entry(frm, textvariable=self.glim, width=16).grid(row=5, column=0, sticky="w")
 
+        ttk.Label(frm, text="Proxy (e.g. http://host:8080; blank = none)").grid(
+            row=4, column=1, sticky="w", pady=(10, 0))
+        self.proxy = tk.StringVar(value=mgr.settings.proxy)
+        ttk.Entry(frm, textvariable=self.proxy, width=24).grid(row=5, column=1, sticky="w")
+
         self.categorize = tk.BooleanVar(value=mgr.settings.categorize)
         ttk.Checkbutton(frm, text="Sort downloads into type folders (Video, Music, Documents, Compressed, Programs)",
                         variable=self.categorize).grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 0))
@@ -177,6 +182,7 @@ class SettingsDialog(tk.Toplevel):
         self.mgr.settings.connections = max(1, int(self.conn.get()))
         self.mgr.max_concurrent = max(1, int(self.maxc.get()))
         self.mgr.settings.categorize = bool(self.categorize.get())
+        self.mgr.settings.proxy = self.proxy.get().strip()
         # Global speed limit.
         try:
             self.mgr.set_global_rate(parse_rate(self.glim.get()))
@@ -476,8 +482,14 @@ class App(tk.Tk):
         dlg = AddDialog(self, self.mgr.settings.connections)
         self.wait_window(dlg)
         if dlg.result:
+            from ..batch import expand_urls
             url, fn, conn = dlg.result
-            self.mgr.add(url, filename=fn, connections=conn, start=True)
+            urls = expand_urls(url)
+            if len(urls) <= 1:
+                self.mgr.add(url, filename=fn, connections=conn, start=True)
+            else:
+                # A pattern/list expanded to many — queue them all (filename auto).
+                self.mgr.add_batch(url, connections=conn, start=True)
             self._refresh()
 
     def on_resume(self):

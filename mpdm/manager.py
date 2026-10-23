@@ -23,6 +23,7 @@ from .engine import Download, DownloadError
 from .models import Progress, Status
 from .ratelimit import RateLimiter
 from .scheduler import Scheduler
+from .batch import expand_urls
 
 
 # Categories live in categories.py; re-exported here for existing importers.
@@ -199,6 +200,16 @@ class DownloadManager:
         if start:
             self.pump()
         return item
+
+    def add_batch(self, text: str, connections: Optional[int] = None,
+                  headers: Optional[dict] = None, start: bool = True,
+                  max_rate_bps: int = 0) -> list:
+        """Expand a pattern / list of URLs and queue each (IDM-style batch add)."""
+        items = []
+        for url in expand_urls(text):
+            items.append(self.add(url, connections=connections, headers=headers,
+                                  start=start, max_rate_bps=max_rate_bps))
+        return items
 
     def pump(self):
         """Start queued downloads up to the concurrency limit."""

@@ -76,6 +76,9 @@ class Settings:
     output_dir: str = field(default_factory=lambda: str(default_download_dir()))
     # Verify TLS certificates (leave True; exposed for testing only).
     verify_tls: bool = True
+    # Optional proxy for all requests, e.g. "http://host:8080" or
+    # "socks5://host:1080" (empty = direct / honor system env proxies).
+    proxy: str = ""
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -97,4 +100,6 @@ class Settings:
             s.user_agent = resolve_user_agent(os.environ["MDM_USER_AGENT"])
         if os.environ.get("MDM_CATEGORIZE"):
             s.categorize = os.environ["MDM_CATEGORIZE"].strip().lower() not in ("0", "false", "no", "")
+        if os.environ.get("MDM_PROXY"):
+            s.proxy = os.environ["MDM_PROXY"].strip()
         return s

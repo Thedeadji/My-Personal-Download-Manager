@@ -104,11 +104,11 @@ class Handler(BaseHTTPRequestHandler):
                 url = (body.get("url") or "").strip()
                 if not url:
                     return self._json({"error": "no url"}, 400)
-                m.add(url,
-                      filename=(body.get("filename") or "").strip(),
-                      connections=body.get("connections") or None,
-                      max_rate_bps=parse_rate(body.get("rate")),
-                      start=body.get("start", True))
+                # Expand batch/wildcard patterns (img[1-100].jpg, lists) into many.
+                m.add_batch(url,
+                            connections=body.get("connections") or None,
+                            max_rate_bps=parse_rate(body.get("rate")),
+                            start=body.get("start", True))
             elif path == "/api/pause":
                 m.pause(body.get("id"))
             elif path == "/api/resume":

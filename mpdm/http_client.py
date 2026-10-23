@@ -51,6 +51,8 @@ def sanitize_filename(name: str) -> str:
 def build_session(settings: Settings, extra_headers: Optional[dict] = None) -> requests.Session:
     s = requests.Session()
     s.headers.update({"User-Agent": settings.user_agent, "Accept": "*/*"})
+    if getattr(settings, "proxy", ""):
+        s.proxies = {"http": settings.proxy, "https": settings.proxy}
     if extra_headers:
         # Caller-supplied headers (Cookie, Referer, custom User-Agent from the
         # browser) override our defaults so authenticated downloads replay.
