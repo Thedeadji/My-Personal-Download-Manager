@@ -24,7 +24,7 @@ from typing import Callable, Optional
 import requests
 
 from .config import Settings
-from .http_client import build_session, probe, open_range
+from .http_client import build_session, probe, open_range, sanitize_filename
 from .models import Segment, Status, Progress, RemoteInfo, TaskRecord
 from .ratelimit import RateLimiter
 from .categories import categorized_dir
@@ -292,9 +292,10 @@ class Download:
         #    (handles the "virus scan" page + confirm token/cookie) before probing.
         from . import gdrive
         drive = gdrive.is_drive_url(self.url)
+        drive_name = None
         if drive:
             try:
-                self.url = gdrive.resolve(self.url, self.settings, self._session)
+                self.url, drive_name = gdrive.resolve(self.url, self.settings, self._session)
             except Exception:  # noqa: BLE001 — never block a download on resolution
                 pass
 
@@ -311,6 +312,21 @@ class Download:
                 "Google Drive returned its confirmation/sign-in page, not the file. "
                 "The file may be private (download via the browser extension while "
                 "signed in) or require manual confirmation.")
+
+        # Drive URLs don't carry the real filename, so a plain save becomes
+        # "download". Use the name we resolved from Content-Disposition / the page.
+        if drive and drive_name:
+            good = sanitize_filename(drive_name)
+            if self.dest_path:
+                base = os.path.basename(self.dest_path)
+                if base.lower() in ("download", "") or "." not in base:
+                    out_dir = categorized_dir(self.settings.output_dir, good,
+                                              self.settings.categorize,
+                                              getattr(self.settings, "category_dirs", None))
+                    os.makedirs(out_dir, exist_ok=True)
+                    self.dest_path = storage.unique_dest(out_dir, good)
+            else:
+                self.info.filename = good
 
         # 2. Decide output path. Prefer resuming a matching interrupted download
         #    in the output dir over creating a new (1), (2), ... copy.

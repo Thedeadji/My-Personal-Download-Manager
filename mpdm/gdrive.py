@@ -22,7 +22,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 import requests
 
 from .config import Settings
-from .http_client import build_session
+from .http_client import build_session, _filename_from_disposition
 
 _HOSTS = ("drive.google.com", "drive.usercontent.google.com")
 _DOWNLOAD = "https://drive.usercontent.google.com/download"
@@ -54,6 +54,20 @@ def _is_html(resp: requests.Response) -> bool:
     return "text/html" in (resp.headers.get("Content-Type", "") or "").lower()
 
 
+def _name_from_html(html: str) -> Optional[str]:
+    """Best-effort filename from a Drive interstitial page."""
+    m = re.search(r'<span[^>]*class="uc-name-size"[^>]*>.*?>([^<]+)</a>', html, re.S | re.I)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"<title>([^<]+)</title>", html, re.I)
+    if m:
+        t = m.group(1).strip()
+        for suffix in (" - Google Drive", " – Google Drive"):
+            if t.endswith(suffix):
+                return t[: -len(suffix)].strip()
+    return None
+
+
 def _parse_download_form(html: str) -> Optional[str]:
     """Build the real download URL from the interstitial's <form>."""
     m = re.search(r'id="download-form"[^>]*action="([^"]+)"', html, re.I) \
@@ -69,44 +83,44 @@ def _parse_download_form(html: str) -> Optional[str]:
 
 
 def resolve(url: str, settings: Optional[Settings] = None,
-            session: Optional[requests.Session] = None) -> str:
-    """Return a directly-downloadable URL for a Drive link (or the input unchanged).
+            session: Optional[requests.Session] = None):
+    """Resolve a Drive link to (download_url, filename_or_None).
 
-    Uses `session` so any cookies Drive sets persist for the engine's later probe
-    and range requests. Never raises on a parsing miss — returns the best URL it
-    has so the caller can still try.
+    Makes one header request so it can both confirm the real download URL and read
+    the file's name from Content-Disposition (the Drive download page omits it from
+    the URL, so a plain save becomes "download"). Uses `session` so Drive cookies
+    persist for the engine's later probe/range requests. Never raises on a miss.
     """
     settings = settings or Settings()
     sess = session or build_session(settings)
     fid = file_id(url)
     if not fid:
-        return url
+        return url, None
 
-    # Already a tokenized download URL (confirm token present) — e.g. captured
-    # from the browser with its `at`/`uuid` tokens. Trust it; just download it.
-    if parse_qs(urlparse(url).query).get("confirm"):
-        return url
-
-    params = {"id": fid, "export": "download", "confirm": "t"}
+    tokenized = bool(parse_qs(urlparse(url).query).get("confirm"))
+    target = url if tokenized else _DOWNLOAD
+    params = None if tokenized else {"id": fid, "export": "download", "confirm": "t"}
     try:
-        r = sess.get(_DOWNLOAD, params=params, stream=True,
+        r = sess.get(target, params=params, stream=True,
                      timeout=(settings.connect_timeout, settings.read_timeout),
                      allow_redirects=True, verify=settings.verify_tls)
     except requests.RequestException:
-        return url
+        return url, None
     try:
         if not _is_html(r):
-            return r.url                     # already the file
-        html = r.text                        # small interstitial page
+            name = _filename_from_disposition(r.headers.get("Content-Disposition", ""))
+            return r.url, name           # the file itself; name from its headers
+        html = r.text                    # small interstitial page
         final_url = r.url
     finally:
         r.close()
 
+    name = _name_from_html(html)
     parsed = _parse_download_form(html)
     if parsed:
-        return parsed
+        return parsed, name
     m = re.search(r"confirm=([0-9A-Za-z_\-]+)", html)
     if m:
-        params["confirm"] = m.group(1)
-        return _DOWNLOAD + "?" + urlencode(params)
-    return final_url
+        return _DOWNLOAD + "?" + urlencode({"id": fid, "export": "download",
+                                            "confirm": m.group(1)}), name
+    return final_url, name

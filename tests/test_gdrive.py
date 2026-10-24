@@ -22,9 +22,11 @@ def test_file_id_forms():
 
 
 class _Resp:
-    def __init__(self, url, content_type, text=""):
+    def __init__(self, url, content_type, text="", disposition=None):
         self.url = url
         self.headers = {"Content-Type": content_type}
+        if disposition:
+            self.headers["Content-Disposition"] = disposition
         self.text = text
 
     def close(self):
@@ -43,12 +45,14 @@ class _Session:
 
 
 def test_resolve_direct_file():
-    # confirm=t endpoint returns the file directly (non-HTML) -> use its URL.
+    # confirm=t endpoint returns the file directly (non-HTML) -> url + name from CD.
     resp = _Resp("https://drive.usercontent.google.com/download?id=ID&export=download&confirm=t",
-                 "application/x-rar-compressed")
-    out = gdrive.resolve("https://drive.google.com/file/d/ID1234567890/view",
-                         Settings(), _Session(resp))
+                 "application/x-rar-compressed",
+                 disposition='attachment; filename="Mabar First.zip"')
+    out, name = gdrive.resolve("https://drive.google.com/file/d/ID1234567890/view",
+                               Settings(), _Session(resp))
     assert out == resp.url
+    assert name == "Mabar First.zip"
 
 
 INTERSTITIAL = """<!doctype html><html><body>
@@ -63,28 +67,30 @@ INTERSTITIAL = """<!doctype html><html><body>
 def test_resolve_interstitial_form():
     resp = _Resp("https://drive.usercontent.google.com/download?...", "text/html; charset=utf-8",
                  text=INTERSTITIAL)
-    out = gdrive.resolve("https://drive.google.com/file/d/ID1234567890/view",
-                         Settings(), _Session(resp))
+    out, name = gdrive.resolve("https://drive.google.com/file/d/ID1234567890/view",
+                               Settings(), _Session(resp))
     assert out.startswith("https://drive.usercontent.google.com/download?")
     assert "id=ID1234567890" in out
     assert "confirm=abcTOKEN" in out
     assert "uuid=xyz-uuid-1" in out
 
 
-def test_resolve_tokenized_url_passthrough():
-    # A URL that already has a confirm token is returned as-is (no request made).
-    sess = _Session(_Resp("x", "text/html"))
+def test_resolve_tokenized_reads_name():
+    # A tokenized URL downloads directly; we still fetch headers to get its name.
+    resp = _Resp("https://drive.usercontent.google.com/download?id=ID&confirm=t&at=T",
+                 "application/zip", disposition="attachment; filename=\"Mabar First.zip\"")
     url = ("https://drive.usercontent.google.com/download?id=ID1234567890"
            "&export=download&confirm=t&uuid=abc&at=TOKEN")
-    assert gdrive.resolve(url, Settings(), sess) == url
-    assert sess.calls == []
+    out, name = gdrive.resolve(url, Settings(), _Session(resp))
+    assert out == resp.url
+    assert name == "Mabar First.zip"
 
 
 def test_resolve_non_drive_passthrough():
     # Not a Drive file id -> return input unchanged (no request made).
     sess = _Session(_Resp("x", "text/html"))
     url = "https://drive.google.com/drive/folders/XYZ"
-    assert gdrive.resolve(url, Settings(), sess) == url
+    assert gdrive.resolve(url, Settings(), sess) == (url, None)
     assert sess.calls == []
 
 
