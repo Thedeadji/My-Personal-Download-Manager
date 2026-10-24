@@ -291,7 +291,8 @@ class Download:
         # 0. Google Drive: rewrite share/interstitial URLs to the real file URL
         #    (handles the "virus scan" page + confirm token/cookie) before probing.
         from . import gdrive
-        if gdrive.is_drive_url(self.url):
+        drive = gdrive.is_drive_url(self.url)
+        if drive:
             try:
                 self.url = gdrive.resolve(self.url, self.settings, self._session)
             except Exception:  # noqa: BLE001 — never block a download on resolution
@@ -301,6 +302,15 @@ class Download:
         self.status = Status.PROBING
         self._emit(force=True)
         self.info = probe(self.url, self.settings, self._session)
+
+        # Guard: don't silently save Drive's HTML confirmation/sign-in page.
+        if drive and (self.info.content_type or "").lower().startswith("text/html"):
+            self.status = Status.FAILED
+            self._emit(force=True)
+            raise DownloadError(
+                "Google Drive returned its confirmation/sign-in page, not the file. "
+                "The file may be private (download via the browser extension while "
+                "signed in) or require manual confirmation.")
 
         # 2. Decide output path. Prefer resuming a matching interrupted download
         #    in the output dir over creating a new (1), (2), ... copy.

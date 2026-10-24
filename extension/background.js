@@ -164,8 +164,33 @@ function runJob(job) {
   }
 }
 
+// Google Drive serves large files from a signed *.googleusercontent.com URL tied
+// to the browser session, which the engine can't replay. Rewrite Drive downloads
+// back to a canonical uc?id=<FILE_ID> URL (id taken from the URL or the referring
+// Drive page) so the engine's resolver can do the proper confirm flow.
+function driveFileId(s) {
+  if (!s) return null;
+  let m = s.match(/\/file\/d\/([A-Za-z0-9_-]{10,})/) ||
+          s.match(/[?&]id=([A-Za-z0-9_-]{10,})/) ||
+          s.match(/\/d\/([A-Za-z0-9_-]{10,})/);
+  return m ? m[1] : null;
+}
+
+function canonicalizeDrive(url, referer) {
+  let host = "";
+  try { host = new URL(url).host; } catch (e) { return null; }
+  const isDrive = /(^|\.)drive\.google\.com$/.test(host) ||
+                  /(^|\.)drive\.usercontent\.google\.com$/.test(host) ||
+                  host.endsWith("googleusercontent.com");
+  if (!isDrive) return null;
+  const id = driveFileId(url) || driveFileId(referer);
+  return id ? "https://drive.google.com/uc?export=download&id=" + id : null;
+}
+
 async function sendToHost(job) {
   job.headers = job.headers || {};
+  const canon = canonicalizeDrive(job.url, job.headers.Referer);
+  if (canon) job.url = canon;
   const cookie = await getCookieHeader(job.url);
   if (cookie) job.headers["Cookie"] = cookie;
   if (!job.headers["User-Agent"]) job.headers["User-Agent"] = navigator.userAgent;
