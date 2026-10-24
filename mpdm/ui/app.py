@@ -449,6 +449,10 @@ class App(tk.Tk):
             self.after(1200, self._poll_clipboard)
 
     def _on_close(self):
+        try:
+            self.mgr.purge_incognito_incomplete()   # leave nothing in the hidden folder
+        except Exception:
+            pass
         self.mgr.stop_scheduler()
         self.destroy()
 

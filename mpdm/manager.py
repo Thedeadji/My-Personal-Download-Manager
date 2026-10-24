@@ -373,26 +373,70 @@ class DownloadManager:
             self.save()
             self.pump()
 
+    def _delete_files(self, dest_path):
+        """Delete a download's output file, its .mpdm sidecar and any .tmp."""
+        if not dest_path:
+            return
+        from . import storage
+        for p in (dest_path, storage.sidecar_path(dest_path), dest_path + ".tmp"):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except OSError:
+                pass
+
+    def _wait_dl_release(self, it, timeout: float = 6.0):
+        """Wait until the worker has released the file (it._dl cleared)."""
+        end = time.time() + timeout
+        while time.time() < end and it._dl is not None:
+            time.sleep(0.1)
+
     def remove(self, item_id: str, delete_file: bool = False):
         it = self.items.get(item_id)
         if not it:
             return
-        if it.status == ST_DOWNLOADING and it._dl:
+        active = it.status == ST_DOWNLOADING and it._dl is not None
+        if active:
             it._dl.cancel()
         with self._lock:
             self.items.pop(item_id, None)
             if item_id in self._order:
                 self._order.remove(item_id)
-        if delete_file and it.dest_path:
-            from . import storage
-            for p in (it.dest_path, storage.sidecar_path(it.dest_path)):
-                try:
-                    if os.path.exists(p):
-                        os.remove(p)
-                except OSError:
-                    pass
+        # Incognito always purges its files; otherwise only on explicit delete.
+        if (delete_file or it.incognito) and it.dest_path:
+            if active:
+                # Wait for the worker to release the handle before deleting
+                # (Windows won't delete an open file), off the UI thread.
+                threading.Thread(
+                    target=lambda: (self._wait_dl_release(it),
+                                    self._delete_files(it.dest_path)),
+                    daemon=True).start()
+            else:
+                self._delete_files(it.dest_path)
         self.save()
         self.pump()
+
+    def purge_incognito_incomplete(self):
+        """Delete partials + sidecars for unfinished incognito downloads.
+
+        Called on app close so nothing is left in the hidden folder. Completed
+        incognito files are kept (that's the file you wanted). Synchronous, since
+        the process is about to exit.
+        """
+        for it in list(self.items.values()):
+            if not it.incognito or it.status == ST_COMPLETED:
+                continue
+            active = it.status == ST_DOWNLOADING and it._dl is not None
+            if active:
+                it._dl.cancel()
+            with self._lock:
+                self.items.pop(it.id, None)
+                if it.id in self._order:
+                    self._order.remove(it.id)
+            if active:
+                self._wait_dl_release(it)
+            self._delete_files(it.dest_path)
+        self.save()
 
     def clear_finished(self):
         for it in list(self.items.values()):
