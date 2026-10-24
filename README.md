@@ -29,6 +29,8 @@ work internally.
 - **Proxy support** — route requests through an HTTP/SOCKS proxy.
 - **Google Drive links** — share/`uc` URLs are resolved to the real file
   (handles the "can't scan for viruses" confirmation page) and named correctly.
+- **Incognito downloads** — kept out of the app's history and saved into a hidden
+  `InvisibleFile` folder; still pausable/resumable while the app is open.
 - **Finish actions** — run a program, sleep, or shut down when the queue is done.
 - **Clipboard monitoring** — the desktop app can offer to grab copied links.
 - **Scheduler** — start/pause the queue or change the global speed limit at set
@@ -77,6 +79,9 @@ python -m mpdm get "https://example.com/img[1-50].jpg"
 
 # Through a proxy
 python -m mpdm get "https://example.com/big.zip" --proxy http://127.0.0.1:8080
+
+# Incognito: save into a hidden InvisibleFile folder, no history record
+python -m mpdm get "https://example.com/secret.zip" --incognito
 
 # Grab an HLS stream to MP4 (needs ffmpeg)
 python -m mpdm grab "https://example.com/playlist.m3u8" -o movie.mp4 --quality 720

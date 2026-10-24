@@ -50,6 +50,7 @@ class DownloadItem:
     status: str = ST_QUEUED
     connections: Optional[int] = None
     max_rate_bps: int = 0          # per-download speed limit (0 = unlimited)
+    incognito: bool = False        # not saved to history; file goes to a hidden folder
     headers: dict = field(default_factory=dict)
     error: str = ""
     added_at: float = field(default_factory=time.time)
@@ -229,7 +230,9 @@ class DownloadManager:
 
     def save(self):
         with self._lock:
-            data = {"items": [self.items[i].to_dict() for i in self._order if i in self.items]}
+            # Incognito downloads are session-only — never written to history.
+            data = {"items": [self.items[i].to_dict() for i in self._order
+                              if i in self.items and not self.items[i].incognito]}
         try:
             tmp = str(self._store) + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -249,13 +252,14 @@ class DownloadManager:
     # ---- mutations -------------------------------------------------------
     def add(self, url: str, filename: str = "", connections: Optional[int] = None,
             headers: Optional[dict] = None, start: bool = True,
-            max_rate_bps: int = 0) -> DownloadItem:
+            max_rate_bps: int = 0, incognito: bool = False) -> DownloadItem:
         item = DownloadItem(
             id=uuid.uuid4().hex[:12],
             url=url.strip(),
             filename=filename or "",
             connections=connections,
             max_rate_bps=max(0, int(max_rate_bps)),
+            incognito=bool(incognito),
             headers=headers or {},
             status=ST_QUEUED if start else ST_PAUSED,
         )
@@ -269,12 +273,13 @@ class DownloadManager:
 
     def add_batch(self, text: str, connections: Optional[int] = None,
                   headers: Optional[dict] = None, start: bool = True,
-                  max_rate_bps: int = 0) -> list:
+                  max_rate_bps: int = 0, incognito: bool = False) -> list:
         """Expand a pattern / list of URLs and queue each (IDM-style batch add)."""
         items = []
         for url in expand_urls(text):
             items.append(self.add(url, connections=connections, headers=headers,
-                                  start=start, max_rate_bps=max_rate_bps))
+                                  start=start, max_rate_bps=max_rate_bps,
+                                  incognito=incognito))
         return items
 
     def pump(self):
@@ -298,6 +303,13 @@ class DownloadManager:
         # Per-item limit overrides the manager default; global cap is separate.
         if item.max_rate_bps:
             settings.max_rate_bps = item.max_rate_bps
+        # Incognito: save into a hidden folder, bypassing category routing.
+        if item.incognito:
+            from .config import INCOGNITO_DIRNAME
+            from . import storage
+            settings.output_dir = storage.ensure_hidden_dir(
+                os.path.join(settings.output_dir, INCOGNITO_DIRNAME))
+            settings.categorize = False
 
         def cb(p: Progress):
             item.downloaded = p.downloaded

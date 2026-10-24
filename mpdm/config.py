@@ -8,6 +8,10 @@ from pathlib import Path
 
 APP_DIRNAME = ".mypersonaldownloadmanager"
 
+# Incognito downloads go into this hidden subfolder of the download dir and are
+# never written to the app's history.
+INCOGNITO_DIRNAME = "InvisibleFile"
+
 # Our honest default identifier.
 DEFAULT_USER_AGENT = "MyPersonalDownloadManager/0.1 (+research)"
 # A realistic desktop-Chrome UA, used only when the user opts in because a server

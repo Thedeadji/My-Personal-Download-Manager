@@ -90,6 +90,10 @@ class AddDialog(tk.Toplevel):
         self.conn = tk.IntVar(value=default_conn)
         ttk.Spinbox(frm, from_=1, to=32, textvariable=self.conn, width=6).grid(row=3, column=2, sticky="e", pady=(2, 8))
 
+        self.incog = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frm, text="Incognito (hide file, don't save to history)",
+                        variable=self.incog).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
         btns = ttk.Frame(frm)
         btns.grid(row=4, column=0, columnspan=3, sticky="e", pady=(4, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="right", padx=4)
@@ -112,7 +116,7 @@ class AddDialog(tk.Toplevel):
         if not url:
             messagebox.showwarning(__app_name__, "Please enter a URL.", parent=self)
             return
-        self.result = (url, self.fn.get().strip(), int(self.conn.get()))
+        self.result = (url, self.fn.get().strip(), int(self.conn.get()), bool(self.incog.get()))
         self.destroy()
 
 
@@ -592,13 +596,13 @@ class App(tk.Tk):
         self.wait_window(dlg)
         if dlg.result:
             from ..batch import expand_urls
-            url, fn, conn = dlg.result
+            url, fn, conn, incog = dlg.result
             urls = expand_urls(url)
             if len(urls) <= 1:
-                self.mgr.add(url, filename=fn, connections=conn, start=True)
+                self.mgr.add(url, filename=fn, connections=conn, start=True, incognito=incog)
             else:
                 # A pattern/list expanded to many — queue them all (filename auto).
-                self.mgr.add_batch(url, connections=conn, start=True)
+                self.mgr.add_batch(url, connections=conn, start=True, incognito=incog)
             self._refresh()
 
     def on_resume(self):
@@ -706,7 +710,7 @@ class App(tk.Tk):
         for it in visible:
             wanted.append(it.id)
             vals = (
-                it.filename or it.url,
+                ("🕶 " if it.incognito else "") + (it.filename or it.url),
                 human(it.size),
                 f"{it.percent:.0f}%" if it.percent is not None else "—",
                 self._status_label(it),

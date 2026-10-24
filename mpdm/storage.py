@@ -125,6 +125,19 @@ def clean_dir(output_dir: str, purge_partials: bool = False) -> dict:
     }
 
 
+def ensure_hidden_dir(path: str) -> str:
+    """Create `path` and mark it hidden (Windows attribute). Returns the path."""
+    os.makedirs(path, exist_ok=True)
+    if os.name == "nt":
+        try:
+            import ctypes
+            FILE_ATTRIBUTE_HIDDEN = 0x02
+            ctypes.windll.kernel32.SetFileAttributesW(str(path), FILE_ATTRIBUTE_HIDDEN)
+        except Exception:
+            pass
+    return path
+
+
 def unique_dest(output_dir: str, filename: str) -> str:
     """Avoid clobbering an existing finished file: foo.zip -> foo (1).zip."""
     base = Path(output_dir) / filename

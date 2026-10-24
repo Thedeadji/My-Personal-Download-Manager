@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
@@ -70,6 +71,12 @@ def cmd_get(args) -> int:
         settings.user_agent = resolve_user_agent(args.ua)
     if args.proxy:
         settings.proxy = args.proxy
+    if getattr(args, "incognito", False):
+        from .config import INCOGNITO_DIRNAME
+        from . import storage
+        settings.output_dir = storage.ensure_hidden_dir(
+            os.path.join(settings.output_dir, INCOGNITO_DIRNAME))
+        settings.categorize = False
     if args.limit:
         try:
             settings.max_rate_bps = parse_rate(args.limit)
@@ -170,6 +177,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--ua", help='User-Agent: "browser" for a Chrome UA, or a custom string '
                                 "(default: honest MPDM UA)")
     g.add_argument("--proxy", help='proxy URL, e.g. "http://host:8080" or "socks5://host:1080"')
+    g.add_argument("--incognito", action="store_true",
+                   help="save into a hidden InvisibleFile folder; keep it out of history")
     g.add_argument("-q", "--quiet", action="store_true")
     g.set_defaults(func=cmd_get)
 
