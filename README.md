@@ -27,6 +27,8 @@ work internally.
 - **Batch / wildcard URLs** — expand patterns like `img[1-100].jpg`,
   `f[001-010].zip`, `ch[a-e]/[1-3].ts`, or a pasted list, into many downloads.
 - **Proxy support** — route requests through an HTTP/SOCKS proxy.
+- **Google Drive links** — share/`uc` URLs are resolved to the real file
+  (handles the "can't scan for viruses" confirmation page) and named correctly.
 - **Finish actions** — run a program, sleep, or shut down when the queue is done.
 - **Clipboard monitoring** — the desktop app can offer to grab copied links.
 - **Scheduler** — start/pause the queue or change the global speed limit at set

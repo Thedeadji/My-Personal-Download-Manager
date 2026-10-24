@@ -288,6 +288,15 @@ class Download:
         """Run the download to completion. Returns the output path."""
         self._t0 = time.time()
 
+        # 0. Google Drive: rewrite share/interstitial URLs to the real file URL
+        #    (handles the "virus scan" page + confirm token/cookie) before probing.
+        from . import gdrive
+        if gdrive.is_drive_url(self.url):
+            try:
+                self.url = gdrive.resolve(self.url, self.settings, self._session)
+            except Exception:  # noqa: BLE001 — never block a download on resolution
+                pass
+
         # 1. Probe
         self.status = Status.PROBING
         self._emit(force=True)
