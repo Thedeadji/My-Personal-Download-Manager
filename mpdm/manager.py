@@ -111,6 +111,19 @@ class DownloadManager:
         self.on_done_command = prefs.get("on_done_command", "")
         self._on_complete_fired = False
         self.load()
+        self.sweep_incognito()
+
+    def sweep_incognito(self):
+        """Clear stray partials/sidecars a hard-killed incognito download left in
+        the hidden folder (completed files have no sidecar and are kept)."""
+        from .config import INCOGNITO_DIRNAME
+        from . import storage
+        d = os.path.join(self.settings.output_dir, INCOGNITO_DIRNAME)
+        if os.path.isdir(d):
+            try:
+                storage.clean_dir(d, purge_partials=True)
+            except OSError:
+                pass
 
     def save_settings(self):
         """Persist settings + manager-level prefs to settings.json."""

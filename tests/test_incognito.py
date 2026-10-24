@@ -11,8 +11,9 @@ os.environ["USERPROFILE"] = _TMP
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mpdm import storage
-from mpdm.config import INCOGNITO_DIRNAME
+from mpdm.config import INCOGNITO_DIRNAME, Settings
 from mpdm.manager import DownloadManager
+from mpdm.models import Segment, TaskRecord
 
 
 def test_incognito_item_not_persisted():
@@ -75,6 +76,28 @@ def test_purge_incognito_incomplete_on_close():
     m.purge_incognito_incomplete()
     assert not os.path.exists(it.dest_path)
     assert it.id not in m.items
+
+
+def test_startup_sweep_clears_incognito_partials():
+    base = tempfile.mkdtemp()
+    hidden = storage.ensure_hidden_dir(os.path.join(base, INCOGNITO_DIRNAME))
+    # An interrupted partial: file + an INCOMPLETE sidecar.
+    partial = os.path.join(hidden, "secret.zip")
+    open(partial, "wb").write(b"x" * 50)
+    seg = Segment(index=0, start=0, end=99, downloaded=50)   # not complete
+    storage.save_record(partial, TaskRecord(
+        url="http://h/secret.zip", dest_path=partial, size=100, accept_ranges=True,
+        segments=storage.segments_to_dicts([seg]), status="downloading"))
+    # A completed incognito file (no sidecar) must be kept.
+    done = os.path.join(hidden, "keepme.bin")
+    open(done, "wb").write(b"complete")
+
+    # Constructing a manager sweeps the hidden folder on startup.
+    DownloadManager(settings=Settings(output_dir=base))
+
+    assert not os.path.exists(partial)
+    assert not os.path.exists(storage.sidecar_path(partial))
+    assert os.path.exists(done)                               # finished file survives
 
 
 if __name__ == "__main__":
