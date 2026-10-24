@@ -71,6 +71,15 @@ def test_resolve_interstitial_form():
     assert "uuid=xyz-uuid-1" in out
 
 
+def test_resolve_tokenized_url_passthrough():
+    # A URL that already has a confirm token is returned as-is (no request made).
+    sess = _Session(_Resp("x", "text/html"))
+    url = ("https://drive.usercontent.google.com/download?id=ID1234567890"
+           "&export=download&confirm=t&uuid=abc&at=TOKEN")
+    assert gdrive.resolve(url, Settings(), sess) == url
+    assert sess.calls == []
+
+
 def test_resolve_non_drive_passthrough():
     # Not a Drive file id -> return input unchanged (no request made).
     sess = _Session(_Resp("x", "text/html"))

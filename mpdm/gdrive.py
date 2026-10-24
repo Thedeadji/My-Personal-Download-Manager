@@ -82,6 +82,11 @@ def resolve(url: str, settings: Optional[Settings] = None,
     if not fid:
         return url
 
+    # Already a tokenized download URL (confirm token present) — e.g. captured
+    # from the browser with its `at`/`uuid` tokens. Trust it; just download it.
+    if parse_qs(urlparse(url).query).get("confirm"):
+        return url
+
     params = {"id": fid, "export": "download", "confirm": "t"}
     try:
         r = sess.get(_DOWNLOAD, params=params, stream=True,

@@ -177,12 +177,16 @@ function driveFileId(s) {
 }
 
 function canonicalizeDrive(url, referer) {
-  let host = "";
-  try { host = new URL(url).host; } catch (e) { return null; }
+  let u;
+  try { u = new URL(url); } catch (e) { return null; }
+  const host = u.host;
   const isDrive = /(^|\.)drive\.google\.com$/.test(host) ||
                   /(^|\.)drive\.usercontent\.google\.com$/.test(host) ||
                   host.endsWith("googleusercontent.com");
   if (!isDrive) return null;
+  // Already a tokenized download URL (has the confirm token) — the browser did the
+  // handshake; keep it so its cookies/at token still work. Don't re-resolve it.
+  if (u.searchParams.get("confirm")) return null;
   const id = driveFileId(url) || driveFileId(referer);
   return id ? "https://drive.google.com/uc?export=download&id=" + id : null;
 }
