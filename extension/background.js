@@ -205,14 +205,25 @@ async function sendToHost(job) {
 
 // ---- context menu --------------------------------------------------------
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: MENU_ROOT,
-    title: "Download with MyPersonalDownloadManager",
-    contexts: ["link", "image", "video", "audio", "page", "selection"],
+// Rebuild the single context-menu item. removeAll() first so repeated installs /
+// reloads can't pile up duplicate "Download with…" entries.
+function installContextMenu() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: MENU_ROOT,
+      title: "Download with MyPersonalDownloadManager",
+      contexts: ["link", "image", "video", "audio", "page", "selection"],
+    });
   });
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  installContextMenu();
   chrome.storage.local.get({ intercept: false, confirm: true }, () => {});
 });
+// Also run when the service worker starts (browser launch), so a stale/missing
+// menu is corrected without needing a reinstall.
+chrome.runtime.onStartup.addListener(installContextMenu);
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== MENU_ROOT) return;
