@@ -1,0 +1,8 @@
+# CMake / build output
+build/
+out/
+# vcpkg manifest-mode installed tree
+vcpkg_installed/
+# VS / VS Code local
+.vs/
+CMakeUserPresets.json
