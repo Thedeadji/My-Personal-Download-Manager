@@ -13,38 +13,52 @@ behavior and test vectors. See `../PORTING.md` for the feature → library map.
 - **vcpkg** bundled with VS at
   `C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg`
 
-## Build
+## Build (scaffold — no dependencies yet)
 
-### Option A — Visual Studio (simplest)
-File → Open → **Folder…** → select this `cpp/` folder. VS detects
-`CMakeLists.txt` + `vcpkg.json`, uses its bundled vcpkg automatically, configures,
-and builds. Run the `mpdm` target.
+The scaffold uses the **Visual Studio generator**, which locates MSVC on its own
+— so it builds from any shell (no Developer prompt, no Ninja, no vcpkg needed
+yet).
 
-### Option B — Developer PowerShell for VS 2022 (CLI)
+### CLI (any PowerShell / cmd)
 ```powershell
-# one-time: point vcpkg at the VS-bundled copy (or set it as a user env var)
-$env:VCPKG_ROOT = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg"
-
 cd cpp
-cmake --preset vcpkg      # first run also installs deps from vcpkg.json
-cmake --build build
-.\build\mpdm.exe
+cmake --preset vs
+cmake --build build --config Debug
+.\build\Debug\mpdm.exe
 ```
 
-### Option C — VS Code + CMake Tools
-Set `VCPKG_ROOT` (as above) so the `vcpkg` preset's toolchain resolves, then use
-CMake Tools: select the **vcpkg** preset → Configure → Build.
+### Visual Studio
+File → Open → **Folder…** → select this `cpp/` folder → build the `mpdm` target.
+
+### VS Code + CMake Tools
+Pick the **vs** preset → Configure → Build.
 
 Expected output:
 ```
 MPDM (C++) scaffold build OK
-{ "app": "MyPersonalDownloadManager", ... }
+app=MyPersonalDownloadManager  short=MPDM  lang=C++  version=0.1.0  status=scaffold
 ```
 
-## Dependencies (grow as the port advances)
+## Enabling vcpkg (later — when the HTTP layer lands)
 
-`vcpkg.json` currently pulls only `nlohmann-json` (header-only, fast first build).
-As each layer lands we add:
+The VS-bundled vcpkg ships without git history, so manifest mode (baselines)
+doesn't work with it. Use a proper git clone of vcpkg:
+
+```powershell
+git clone https://github.com/microsoft/vcpkg C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+setx VCPKG_ROOT C:\vcpkg          # reopen the terminal afterwards
+
+cd cpp
+& "$env:VCPKG_ROOT\vcpkg.exe" x-update-baseline --add-initial-baseline   # fills builtin-baseline in vcpkg.json
+```
+
+Then re-add the toolchain to the `vs` preset (or add a `vcpkg` preset):
+`"CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"`,
+list the needed packages in `vcpkg.json`, and `find_package(...)` them in
+`CMakeLists.txt`.
+
+### Dependencies (added as the port advances)
 
 | Layer | vcpkg package |
 |---|---|
@@ -53,6 +67,7 @@ As each layer lands we add:
 | DASH XML | `pugixml` |
 | Web dashboard | `cpp-httplib` |
 | CLI parsing | `cli11` |
+| JSON (sidecar/settings) | `nlohmann-json` |
 
 ## Layout (planned)
 ```
