@@ -1,0 +1,64 @@
+#include "mpdm/categories.hpp"
+
+#include <cctype>
+#include <filesystem>
+#include <unordered_map>
+
+namespace mpdm {
+
+// Extension -> category (lowercase, no dot). Mirrors CATEGORY_EXT in categories.py.
+static const std::unordered_map<std::string, std::string>& ext_category() {
+    static const std::unordered_map<std::string, std::string> m = [] {
+        std::unordered_map<std::string, std::string> x;
+        auto add = [&](const char* cat, std::initializer_list<const char*> exts) {
+            for (auto e : exts) x[e] = cat;
+        };
+        add("Video", {"mp4", "mkv", "webm", "avi", "mov", "flv", "m4v", "ts", "wmv", "mpg", "mpeg"});
+        add("Audio", {"mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "wma"});
+        add("Documents", {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "epub", "csv"});
+        add("Archives", {"zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "iso", "cab"});
+        add("Programs", {"exe", "msi", "msix", "dmg", "pkg", "deb", "rpm", "apk", "appimage"});
+        return x;
+    }();
+    return m;
+}
+
+// Category -> on-disk subfolder (IDM-style). "" means "leave in base dir".
+static std::string folder_for(const std::string& category) {
+    if (category == "Video") return "Video";
+    if (category == "Audio") return "Music";
+    if (category == "Documents") return "Documents";
+    if (category == "Archives") return "Compressed";
+    if (category == "Programs") return "Programs";
+    return "";  // Other
+}
+
+std::string classify(const std::string& filename) {
+    auto dot = filename.find_last_of('.');
+    if (dot == std::string::npos || dot + 1 >= filename.size()) return "Other";
+    std::string ext = filename.substr(dot + 1);
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto it = ext_category().find(ext);
+    return it == ext_category().end() ? "Other" : it->second;
+}
+
+std::string category_subdir(const std::string& filename) {
+    return folder_for(classify(filename));
+}
+
+std::string categorized_dir(const std::string& base_dir, const std::string& filename,
+                            bool enabled, const std::map<std::string, std::string>& overrides) {
+    namespace fs = std::filesystem;
+    if (!enabled) return base_dir;
+    std::string cat = classify(filename);
+    auto ov = overrides.find(cat);
+    if (ov != overrides.end() && !ov->second.empty()) {
+        fs::path p(ov->second);
+        return p.is_absolute() ? p.string() : (fs::path(base_dir) / p).string();
+    }
+    std::string sub = folder_for(cat);
+    if (sub.empty()) return base_dir;
+    return (fs::path(base_dir) / sub).string();
+}
+
+} // namespace mpdm
