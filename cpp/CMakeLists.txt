@@ -7,15 +7,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
-# Dependency-free backend layers ported from Python (more land per ../PORTING.md:
-# http via libcurl, AES via openssl, DASH via pugixml, web via cpp-httplib —
-# enabled once a git-cloned vcpkg is set up; see README "Enabling vcpkg").
+find_package(CURL CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+
+# Ported backend layers (grows per ../PORTING.md).
 add_library(mpdm_core
     src/ratelimit.cpp
     src/categories.cpp
     src/batch.cpp
+    src/http_client.cpp
 )
 target_include_directories(mpdm_core PUBLIC include)
+target_link_libraries(mpdm_core PUBLIC CURL::libcurl nlohmann_json::nlohmann_json)
 
 add_executable(mpdm src/main.cpp)
 target_link_libraries(mpdm PRIVATE mpdm_core)
