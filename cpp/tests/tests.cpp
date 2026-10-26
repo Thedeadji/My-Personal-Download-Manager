@@ -1,13 +1,17 @@
 // Backend unit tests — validate the ported logic against the Python behavior.
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
+#include "mpdm/models.hpp"
 #include "mpdm/ratelimit.hpp"
 #include "mpdm/segments.hpp"
+#include "mpdm/storage.hpp"
 
 static int g_failures = 0;
 #define CHECK(cond)                                                               \
@@ -101,11 +105,55 @@ static void test_batch() {
     CHECK((urls == std::vector<std::string>{"https://h/a.zip", "https://h/img1.png", "https://h/img2.png"}));
 }
 
+static void test_storage_roundtrip() {
+    auto dir = fs::temp_directory_path() / fs::path("mpdm_test_" + std::to_string(::time(nullptr)));
+    fs::create_directories(dir);
+    std::string dest = (dir / "file.bin").string();
+
+    CHECK(sidecar_path(dest) == dest + ".mpdm");
+
+    TaskRecord rec;
+    rec.url = "https://h/file.bin";
+    rec.dest_path = dest;
+    rec.size = 1000;
+    rec.accept_ranges = true;
+    rec.status = "downloading";
+    rec.etag = "\"abc\"";
+    rec.segments = {Segment{0, 0, 499, 100}, Segment{1, 500, 999, 0}};
+    save_record(dest, rec);
+
+    auto back = load_record(dest);
+    CHECK(back.has_value());
+    CHECK(back->url == rec.url);
+    CHECK(back->size == rec.size);
+    CHECK(back->etag == rec.etag);
+    CHECK(back->segments.size() == 2);
+    CHECK(back->segments[0].downloaded == 100);
+    CHECK(back->segments[1].start == 500);
+
+    // find_resumable matches on url+size+etag when the file exists.
+    { std::ofstream f(dest, std::ios::binary); f << "x"; }
+    auto found = find_resumable(dir.string(), rec.url, rec.size, rec.etag);
+    CHECK(found.has_value() && *found == dest);
+    CHECK(!find_resumable(dir.string(), rec.url, 9999, rec.etag).has_value());  // size mismatch
+
+    clear_record(dest);
+    CHECK(!load_record(dest).has_value());
+
+    // unique_dest avoids clobbering.
+    std::string u = unique_dest(dir.string(), "file.bin");  // file.bin exists -> "file (1).bin"
+    CHECK(fs::path(u).filename().string() == "file (1).bin");
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 int main() {
     test_plan_segments();
     test_parse_rate();
     test_categories();
     test_batch();
+    test_storage_roundtrip();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;

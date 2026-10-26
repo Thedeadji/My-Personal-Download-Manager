@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mpdm {
 
@@ -49,6 +50,18 @@ struct Progress {
         double p = static_cast<double>(downloaded) * 100.0 / static_cast<double>(*total);
         return p < 100.0 ? p : 100.0;
     }
+};
+
+// Serializable record of a download task (the .mpdm resume sidecar).
+struct TaskRecord {
+    std::string url;
+    std::string dest_path;
+    std::optional<long long> size;
+    bool accept_ranges = false;
+    std::vector<Segment> segments;
+    std::string status;
+    std::optional<std::string> etag;
+    std::optional<std::string> last_modified;
 };
 
 } // namespace mpdm
