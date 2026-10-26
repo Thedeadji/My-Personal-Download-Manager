@@ -18,6 +18,7 @@ add_library(mpdm_core
     src/http_client.cpp
     src/storage.cpp
     src/engine.cpp
+    src/manager.cpp
 )
 target_include_directories(mpdm_core PUBLIC include)
 target_link_libraries(mpdm_core PUBLIC CURL::libcurl nlohmann_json::nlohmann_json)

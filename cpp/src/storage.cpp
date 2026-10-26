@@ -6,6 +6,10 @@
 #include <filesystem>
 #include <fstream>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 using nlohmann::json;
 
@@ -122,9 +126,7 @@ std::string ensure_hidden_dir(const std::string& path) {
     std::error_code ec;
     fs::create_directories(path, ec);
 #ifdef _WIN32
-    // SetFileAttributesW(path, FILE_ATTRIBUTE_HIDDEN) without pulling in windows.h
-    // here is awkward; the manager layer can set it. create_directories suffices
-    // for cross-platform; Windows hidden attribute handled where needed.
+    SetFileAttributesA(path.c_str(), FILE_ATTRIBUTE_HIDDEN);
 #endif
     return path;
 }

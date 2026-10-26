@@ -1,4 +1,6 @@
 // Backend unit tests — validate the ported logic against the Python behavior.
+#include <algorithm>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -6,8 +8,11 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
+#include "mpdm/manager.hpp"
 #include "mpdm/models.hpp"
 #include "mpdm/ratelimit.hpp"
 #include "mpdm/segments.hpp"
@@ -148,12 +153,62 @@ static void test_storage_roundtrip() {
     fs::remove_all(dir, ec);
 }
 
+static void set_home(const std::string& dir) {
+#ifdef _WIN32
+    _putenv_s("USERPROFILE", dir.c_str());
+#else
+    setenv("HOME", dir.c_str(), 1);
+#endif
+}
+
+static void test_manager() {
+    auto tmp = (fs::temp_directory_path() / fs::path("mpdm_mgr_" + std::to_string(::time(nullptr)))).string();
+    fs::create_directories(tmp);
+    set_home(tmp);
+
+    mpdm::DownloadManager m(mpdm::Settings{}, 2, 0);
+    auto a = m.add("http://127.0.0.1:1/a.zip", "", 0, {}, /*start=*/false);
+    auto secret = m.add("http://127.0.0.1:1/secret.zip", "", 0, {}, false, 0, /*incognito=*/true);
+    CHECK(secret->incognito);
+    CHECK(m.ordered().size() == 2);
+    CHECK(m.ordered()[0]->url == a->url);  // insertion order preserved
+
+    // Persistence: incognito excluded; normal kept.
+    std::string store = (fs::path(mpdm::state_dir()) / "downloads.json").string();
+    nlohmann::json root;
+    { std::ifstream f(store); f >> root; }
+    std::vector<std::string> urls;
+    for (auto& j : root["items"]) urls.push_back(j["url"].get<std::string>());
+    CHECK(std::find(urls.begin(), urls.end(), a->url) != urls.end());
+    CHECK(std::find(urls.begin(), urls.end(), secret->url) == urls.end());
+
+    // Per-item + global rate.
+    m.set_item_rate(a->id, 500 * 1024);
+    CHECK(a->max_rate_bps == 500 * 1024);
+    m.set_global_rate(1024 * 1024);
+    CHECK(m.global_rate_bps() == 1024 * 1024);
+
+    // A fresh manager reloads the normal item (as paused), not the incognito one.
+    mpdm::DownloadManager m2(mpdm::Settings{}, 2, 0);
+    bool has_a = false, has_secret = false;
+    for (auto& it : m2.ordered()) {
+        if (it->url == a->url) { has_a = true; CHECK(it->status == mpdm::ST_PAUSED); }
+        if (it->url == secret->url) has_secret = true;
+    }
+    CHECK(has_a);
+    CHECK(!has_secret);
+
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+}
+
 int main() {
     test_plan_segments();
     test_parse_rate();
     test_categories();
     test_batch();
     test_storage_roundtrip();
+    test_manager();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;

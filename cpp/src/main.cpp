@@ -7,9 +7,13 @@
 #include <iostream>
 #include <string>
 
+#include <chrono>
+#include <thread>
+
 #include "mpdm/config.hpp"
 #include "mpdm/engine.hpp"
 #include "mpdm/http_client.hpp"
+#include "mpdm/manager.hpp"
 #include "mpdm/ratelimit.hpp"
 #include "mpdm/segments.hpp"
 
@@ -48,10 +52,27 @@ static int do_get(const char* url, const std::string& dest) {
     return 0;
 }
 
+static int do_queue(const char* url) {
+    mpdm::Settings s;
+    s.output_dir = ".";
+    mpdm::DownloadManager mgr(s, 3, 0);
+    auto it = mgr.add(url);
+    while (it->status == mpdm::ST_QUEUED || it->status == mpdm::ST_DOWNLOADING) {
+        if (auto pct = it->percent())
+            std::cout << "\r  " << (int)*pct << "%  " << (it->speed / 1024.0) << " KB/s   " << std::flush;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    std::cout << "\n  status: " << it->status;
+    if (!it->error.empty()) std::cout << " (" << it->error << ")";
+    std::cout << "\n  file  : " << it->dest_path << "\n";
+    return it->status == mpdm::ST_COMPLETED ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
     if (argc >= 3 && std::string(argv[1]) == "probe") return do_probe(argv[2]);
     if (argc >= 3 && std::string(argv[1]) == "get")
         return do_get(argv[2], argc >= 4 ? argv[3] : "");
+    if (argc >= 3 && std::string(argv[1]) == "queue") return do_queue(argv[2]);
     if (argc == 2) return do_probe(argv[1]);  // bare URL -> probe
 
     std::cout << "MyPersonalDownloadManager (C++) — early port\n";
