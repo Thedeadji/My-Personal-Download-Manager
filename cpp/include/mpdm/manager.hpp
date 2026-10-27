@@ -42,6 +42,7 @@ struct DownloadItem {
     std::map<std::string, std::string> headers;
     std::string error;
     double added_at = 0.0;
+    std::vector<SegmentProgress> conn_stats;  // per-connection telemetry, runtime only
 
     std::shared_ptr<Download> dl;  // runtime only (not persisted)
 

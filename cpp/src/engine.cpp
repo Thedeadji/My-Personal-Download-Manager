@@ -105,7 +105,36 @@ void Download::emit(bool force) {
     std::optional<double> eta;
     if (total && speed > 0) eta = std::max(0.0, static_cast<double>(*total - done) / speed);
     int nseg, act;
-    { std::lock_guard<std::mutex> lk(mu_); nseg = static_cast<int>(segments_.size()); act = active_; }
+    std::vector<SegmentProgress> conns;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        nseg = static_cast<int>(segments_.size());
+        act = active_;
+        conns.reserve(segments_.size());
+        for (const auto& s : segments_) {
+            bool active = claimed_.count(s.index) > 0 && !s.complete();
+            auto& smp = seg_sample_[s.index];  // (bytes, time)
+            if (smp.second <= 0.0) {
+                smp = {s.downloaded, now};
+            } else if (now - smp.second >= 0.15) {
+                double inst = static_cast<double>(s.downloaded - smp.first) / (now - smp.second);
+                if (inst < 0) inst = 0;
+                auto it = seg_speed_.find(s.index);
+                seg_speed_[s.index] = it == seg_speed_.end() ? inst : it->second * 0.5 + inst * 0.5;
+                smp = {s.downloaded, now};
+            }
+            SegmentProgress sp;
+            sp.index = s.index;
+            sp.start = s.start;
+            sp.end = s.end;
+            sp.downloaded = s.downloaded;
+            sp.active = active;
+            sp.speed_bps = active && seg_speed_.count(s.index) ? seg_speed_[s.index] : 0.0;
+            auto st = seg_stole_.find(s.index);
+            sp.stole_from = st == seg_stole_.end() ? -1 : st->second;
+            conns.push_back(sp);
+        }
+    }
     Progress p;
     p.total = total;
     p.downloaded = done;
@@ -115,6 +144,7 @@ void Download::emit(bool force) {
     p.active_segments = act;
     p.eta_seconds = eta;
     p.filename = fs::path(dest_path_).filename().string();
+    p.connections = std::move(conns);
     cb_(p);
 }
 
@@ -138,9 +168,11 @@ Segment* Download::claim_or_split() {
     long long new_start = cur + rem / 2;
     long long old_end = victim->end;
     victim->end = new_start - 1;  // shrink victim
+    int victim_index = victim->index;
     ++seg_counter_;
     segments_.push_back(Segment{seg_counter_, new_start, old_end, 0});
     claimed_.insert(seg_counter_);
+    seg_stole_[seg_counter_] = victim_index;  // this connection took over part of victim's range
     return &segments_.back();
 }
 

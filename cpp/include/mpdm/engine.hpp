@@ -74,6 +74,9 @@ private:
     int active_ = 0;
     std::set<int> claimed_;
     int seg_counter_ = -1;
+    std::map<int, double> seg_speed_;                      // index -> smoothed bytes/sec
+    std::map<int, std::pair<long long, double>> seg_sample_;  // index -> (bytes, time) last sample
+    std::map<int, int> seg_stole_;                        // index -> victim index it split from
 };
 
 } // namespace mpdm

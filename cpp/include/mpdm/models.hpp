@@ -34,6 +34,23 @@ struct RemoteInfo {
     std::optional<std::string> content_type;
 };
 
+// Live state of one connection/segment, for the per-connection UI panel.
+struct SegmentProgress {
+    int index = 0;
+    long long start = 0;
+    long long end = -1;
+    long long downloaded = 0;
+    double speed_bps = 0.0;    // 0 when not actively transferring
+    bool active = false;       // a worker is currently downloading this segment
+    int stole_from = -1;       // segment index this one was split off (work-stealing), else -1
+
+    long long size() const { return end - start + 1; }
+    double fraction() const {
+        long long sz = size();
+        return sz > 0 ? static_cast<double>(downloaded) / static_cast<double>(sz) : 0.0;
+    }
+};
+
 // Snapshot of progress, passed to UI callbacks.
 struct Progress {
     std::optional<long long> total;
@@ -44,6 +61,7 @@ struct Progress {
     int active_segments = 0;
     std::optional<double> eta_seconds;
     std::string filename;
+    std::vector<SegmentProgress> connections;  // per-segment live telemetry
 
     std::optional<double> percent() const {
         if (!total || *total == 0) return std::nullopt;

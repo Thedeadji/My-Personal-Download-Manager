@@ -317,6 +317,7 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
         if (p.total) item->size = *p.total;
         item->speed = p.speed_bps;
         item->eta = p.eta_seconds;
+        item->conn_stats = p.connections;
         if (item->dl && !item->dl->dest_path().empty()) {
             item->dest_path = item->dl->dest_path();
             if (item->filename.empty())

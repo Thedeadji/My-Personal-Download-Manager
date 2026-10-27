@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -73,6 +74,23 @@ static void print_progress(const Progress& p) {
     std::cout << "\r" << make_bar(p) << " " << pctbuf << "  " << human(static_cast<double>(p.downloaded))
               << "/" << total << "  " << human(p.speed_bps) << "/s  " << p.active_segments
               << " conn  ETA " << eta << "   " << std::flush;
+
+    static bool dbg = std::getenv("MPDM_DEBUG_CONNS") != nullptr;
+    if (dbg && !p.connections.empty()) {
+        static double last = 0;
+        double now = std::chrono::duration<double>(
+                         std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now - last > 1.0) {
+            last = now;
+            std::cout << "\n  [conns]";
+            for (const auto& c : p.connections) {
+                std::cout << " C" << (c.index + 1) << ":" << static_cast<int>(c.fraction() * 100) << "%";
+                if (c.speed_bps > 0) std::cout << "@" << static_cast<int>(c.speed_bps / 1024) << "k";
+                if (c.stole_from >= 0) std::cout << "(<-C" << (c.stole_from + 1) << ")";
+            }
+            std::cout << "\n";
+        }
+    }
     if (p.status == Status::Completed || p.status == Status::Failed) std::cout << "\n";
 }
 
