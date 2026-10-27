@@ -18,6 +18,7 @@
 #include "mpdm/http_client.hpp"
 #include "mpdm/ratelimit.hpp"
 #include "mpdm/storage.hpp"
+#include "mpdm/web.hpp"
 
 namespace fs = std::filesystem;
 
@@ -253,6 +254,20 @@ static int cmd_clean(const std::vector<std::string>& rest) {
     return 0;
 }
 
+static int cmd_web(const std::vector<std::string>& rest) {
+    std::map<std::string, std::string> aliases = {
+        {"--host", "host"}, {"--port", "port"}, {"--no-open", "no-open"}};
+    std::set<std::string> value_keys = {"host", "port"};
+    Args a = parse_args(rest, aliases, value_keys);
+    std::string host = a.get("host", "127.0.0.1");
+    int port = 8765;
+    if (a.has("port")) {
+        try { port = std::stoi(a.get("port")); } catch (...) {}
+    }
+    bool open = a.flags.count("no-open") == 0;
+    return run_web(host, port, open);
+}
+
 static void usage() {
     std::cout << APP << " — a from-scratch download manager.\n\n"
               << "usage:\n"
@@ -261,6 +276,7 @@ static void usage() {
               << "  mpdm grab <url> -o out.mp4 [-t auto|hls|dash] [--quality best|worst|720] "
                  "[-n N] [--ua X] [--proxy X] [-q]\n"
               << "  mpdm clean [-d dir] [--purge]\n"
+              << "  mpdm web [--host H] [--port P] [--no-open]\n"
               << "  mpdm probe <url>\n";
 }
 
@@ -279,6 +295,7 @@ int run_cli(int argc, char** argv) {
     if (cmd == "get") return cmd_get(rest);
     if (cmd == "grab") return cmd_grab(rest);
     if (cmd == "clean") return cmd_clean(rest);
+    if (cmd == "web") return cmd_web(rest);
     if (cmd == "probe") {
         if (rest.empty()) { std::cerr << "Error: probe needs a URL.\n"; return 2; }
         try {
