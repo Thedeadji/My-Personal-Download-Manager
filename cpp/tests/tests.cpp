@@ -15,6 +15,7 @@
 #include "mpdm/categories.hpp"
 #include "mpdm/config.hpp"
 #include "mpdm/dash.hpp"
+#include "mpdm/gdrive.hpp"
 #include "mpdm/grabber.hpp"
 #include "mpdm/hls.hpp"
 #include "mpdm/manager.hpp"
@@ -375,6 +376,21 @@ static void test_clean() {
     fs::remove_all(dir, ec);
 }
 
+static void test_gdrive() {
+    CHECK(is_drive_url("https://drive.google.com/file/d/ABC123defg_/view?usp=sharing"));
+    CHECK(is_drive_url("https://drive.usercontent.google.com/download?id=XYZ&export=download"));
+    CHECK(!is_drive_url("https://example.com/file/d/abc"));
+    CHECK(!is_drive_url("https://notdrive.google.com.evil.com/x"));
+
+    auto a = drive_file_id("https://drive.google.com/file/d/1A2B3C4D5E6F7g/view?usp=sharing");
+    CHECK(a && *a == "1A2B3C4D5E6F7g");
+    auto b = drive_file_id("https://drive.google.com/open?id=ZZZ_file_id_123");
+    CHECK(b && *b == "ZZZ_file_id_123");
+    auto c = drive_file_id("https://drive.usercontent.google.com/download?id=qq_longid_99&export=download");
+    CHECK(c && *c == "qq_longid_99");
+    CHECK(!drive_file_id("https://drive.google.com/").has_value());
+}
+
 int main() {
     test_plan_segments();
     test_parse_rate();
@@ -388,6 +404,7 @@ int main() {
     test_grabber_plan();
     test_config_ua();
     test_clean();
+    test_gdrive();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;

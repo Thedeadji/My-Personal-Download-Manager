@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "mpdm/categories.hpp"
+#include "mpdm/gdrive.hpp"
 #include "mpdm/segments.hpp"
 #include "mpdm/storage.hpp"
 
@@ -252,9 +253,54 @@ void Download::finish_common() {
 
 std::string Download::start() {
     t0_ = now_seconds();
+
+    // 0. Google Drive: rewrite share/interstitial URLs to the real file URL
+    //    (handles the "virus scan" page + confirm token) before probing.
+    bool drive = is_drive_url(url_);
+    std::optional<std::string> drive_name;
+    if (drive) {
+        GDriveResult r = resolve_drive(url_, http_opts());  // never throws
+        url_ = r.url;
+        drive_name = r.filename;
+    }
+
     status_ = Status::Probing;
     emit(true);
     info_ = probe(url_, http_opts());
+
+    // Guard: don't silently save Drive's HTML confirmation/sign-in page.
+    if (drive && info_->content_type) {
+        std::string ct = *info_->content_type;
+        std::transform(ct.begin(), ct.end(), ct.begin(), ::tolower);
+        if (ct.rfind("text/html", 0) == 0) {
+            status_ = Status::Failed;
+            emit(true);
+            throw DownloadError(
+                "Google Drive returned its confirmation/sign-in page, not the file. The file may "
+                "be private (download via the browser extension while signed in) or require manual "
+                "confirmation.");
+        }
+    }
+
+    // Drive URLs don't carry the real filename, so a plain save becomes "download".
+    // Use the name we resolved from Content-Disposition / the page.
+    if (drive && drive_name && !drive_name->empty()) {
+        std::string good = sanitize_filename(*drive_name);
+        if (!dest_path_.empty()) {
+            std::string base = fs::path(dest_path_).filename().string();
+            std::string blow = base;
+            std::transform(blow.begin(), blow.end(), blow.begin(), ::tolower);
+            if (blow == "download" || base.empty() || base.find('.') == std::string::npos) {
+                std::string out_dir = categorized_dir(settings_.output_dir, good,
+                                                      settings_.categorize, settings_.category_dirs);
+                std::error_code ec;
+                fs::create_directories(out_dir, ec);
+                dest_path_ = unique_dest(out_dir, good);
+            }
+        } else {
+            info_->filename = good;
+        }
+    }
 
     if (dest_path_.empty()) {
         std::string out_dir = categorized_dir(settings_.output_dir, info_->filename,
