@@ -9,6 +9,8 @@ enable_testing()
 
 find_package(CURL CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
 
 # Ported backend layers (grows per ../PORTING.md).
 add_library(mpdm_core
@@ -19,9 +21,17 @@ add_library(mpdm_core
     src/storage.cpp
     src/engine.cpp
     src/manager.cpp
+    src/aes128.cpp
+    src/hls.cpp
+    src/dash.cpp
 )
 target_include_directories(mpdm_core PUBLIC include)
-target_link_libraries(mpdm_core PUBLIC CURL::libcurl nlohmann_json::nlohmann_json)
+target_link_libraries(mpdm_core PUBLIC
+    CURL::libcurl
+    nlohmann_json::nlohmann_json
+    OpenSSL::Crypto
+    pugixml::pugixml
+)
 
 add_executable(mpdm src/main.cpp)
 target_link_libraries(mpdm PRIVATE mpdm_core)

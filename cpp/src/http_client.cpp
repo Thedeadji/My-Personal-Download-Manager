@@ -275,4 +275,26 @@ long get_range(const std::string& url, long long start, long long end,
     return code;
 }
 
+std::string get_bytes(const std::string& url, const HttpOptions& opt) {
+    std::string out;
+    get_range(url, 0, -1, opt, [&](const char* d, size_t n) { out.append(d, n); return true; });
+    return out;
+}
+
+std::string urljoin(const std::string& base, const std::string& rel) {
+    CURLU* u = curl_url();
+    if (!u) return rel;
+    std::string result = rel;
+    if (curl_url_set(u, CURLUPART_URL, base.c_str(), 0) == CURLUE_OK &&
+        curl_url_set(u, CURLUPART_URL, rel.c_str(), 0) == CURLUE_OK) {
+        char* out = nullptr;
+        if (curl_url_get(u, CURLUPART_URL, &out, 0) == CURLUE_OK && out) {
+            result = out;
+            curl_free(out);
+        }
+    }
+    curl_url_cleanup(u);
+    return result;
+}
+
 } // namespace mpdm

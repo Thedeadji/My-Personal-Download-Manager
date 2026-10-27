@@ -41,4 +41,10 @@ long get_range(const std::string& url, long long start, long long end,
                const HttpOptions& opt,
                const std::function<bool(const char*, size_t)>& sink);
 
+// Fetch an entire (small) resource into a string — playlists, manifests, keys.
+std::string get_bytes(const std::string& url, const HttpOptions& opt = {});
+
+// Resolve `rel` against `base` (handles absolute, relative and //host forms).
+std::string urljoin(const std::string& base, const std::string& rel);
+
 } // namespace mpdm

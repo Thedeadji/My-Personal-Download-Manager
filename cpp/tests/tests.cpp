@@ -10,8 +10,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "mpdm/aes128.hpp"
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
+#include "mpdm/dash.hpp"
+#include "mpdm/hls.hpp"
 #include "mpdm/manager.hpp"
 #include "mpdm/models.hpp"
 #include "mpdm/ratelimit.hpp"
@@ -202,6 +205,98 @@ static void test_manager() {
     fs::remove_all(tmp, ec);
 }
 
+static std::string unhex(const std::string& h) {
+    auto v = [](char c) -> int {
+        c = (char)std::tolower((unsigned char)c);
+        return c <= '9' ? c - '0' : c - 'a' + 10;
+    };
+    std::string o;
+    for (size_t i = 0; i + 1 < h.size(); i += 2) o.push_back((char)((v(h[i]) << 4) | v(h[i + 1])));
+    return o;
+}
+
+static void test_aes() {
+    // NIST SP 800-38A F.2 CBC-AES128 (no PKCS#7 -> unpad=false).
+    std::string key = unhex("2b7e151628aed2a6abf7158809cf4f3c");
+    std::string iv = unhex("000102030405060708090a0b0c0d0e0f");
+    std::string ct = unhex("7649abac8119b246cee98e9b12e9197d"
+                           "5086cb9b507219ee95db113a917678b2"
+                           "73bed6b8e3c1743b7116e69e22229516"
+                           "3ff1caa1681fac09120eca307586e1a7");
+    std::string pt = unhex("6bc1bee22e409f96e93d7e117393172a"
+                           "ae2d8a571e03ac9c9eb76fac45af8e51"
+                           "30c81c46a35ce411e5fbc1191a0a52ef"
+                           "f69f2445df4f9b17ad2b417be66c3710");
+    CHECK(aes128_cbc_decrypt(key, iv, ct, false) == pt);
+
+    CHECK(pkcs7_unpad(std::string("hello") + std::string(11, (char)11)) == "hello");
+    CHECK(pkcs7_unpad(std::string(16, 'A') + std::string(16, (char)16)) == std::string(16, 'A'));
+    CHECK(pkcs7_unpad("abc\x05\x05") == "abc\x05\x05");  // invalid padding -> unchanged
+}
+
+static void test_hls() {
+    const char* ENC =
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:10\n"
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"https://host/key1.bin\"\n#EXTINF:6.0,\nseg10.ts\n"
+        "#EXTINF:6.0,\nseg11.ts\n"
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"https://host/key2.bin\",IV=0x00000000000000000000000000000063\n"
+        "#EXTINF:6.0,\nseg12.ts\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6.0,\nseg13.ts\n#EXT-X-ENDLIST\n";
+    auto pl = parse_media(ENC, "https://host/media.m3u8");
+    CHECK(pl.media_sequence == 10);
+    CHECK(pl.is_encrypted());
+    CHECK(pl.seg_infos.size() == 4);
+    CHECK(pl.seg_infos[0].uri == "https://host/seg10.ts");
+    CHECK(pl.seg_infos[0].seq == 10 && pl.seg_infos[3].seq == 13);
+    CHECK(pl.seg_infos[0].key && *pl.seg_infos[0].key->uri == "https://host/key1.bin");
+    CHECK(pl.seg_infos[0].key && !pl.seg_infos[0].key->iv.has_value());
+    CHECK(pl.seg_infos[2].key && *pl.seg_infos[2].key->uri == "https://host/key2.bin");
+    std::string iv63(16, '\0'); iv63[15] = (char)0x63;
+    CHECK(pl.seg_infos[2].key && pl.seg_infos[2].key->iv == iv63);
+    CHECK(!pl.seg_infos[3].key.has_value());
+    std::string iv10(16, '\0'); iv10[15] = (char)10;
+    CHECK(segment_iv(pl.seg_infos[0]) == iv10);  // default IV from sequence number
+
+    const char* MASTER =
+        "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\nhigh.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=640x360\nlow.m3u8\n";
+    CHECK(is_master(MASTER));
+    auto vars = parse_master(MASTER, "https://h/x.m3u8");
+    CHECK(vars.size() == 2 && vars[0].bandwidth == 800000);  // sorted desc
+    CHECK(vars[0].uri == "https://h/high.m3u8");
+}
+
+static void test_dash() {
+    const char* TPL =
+        "<MPD mediaPresentationDuration=\"PT6S\"><Period><AdaptationSet mimeType=\"video/mp4\">"
+        "<SegmentTemplate media=\"$RepresentationID$-$Number%03d$.m4s\" "
+        "initialization=\"$RepresentationID$-init.mp4\" startNumber=\"1\">"
+        "<SegmentTimeline><S t=\"0\" d=\"2\" r=\"2\"/></SegmentTimeline></SegmentTemplate>"
+        "<Representation id=\"v0\" bandwidth=\"800000\"/>"
+        "<Representation id=\"v1\" bandwidth=\"200000\"/></AdaptationSet></Period></MPD>";
+    auto s = parse_manifest(TPL, "https://h/mpd/x.mpd", "best");
+    CHECK(s.bandwidth == 800000);
+    CHECK(s.init_url && *s.init_url == "https://h/mpd/v0-init.mp4");
+    CHECK((s.segment_urls == std::vector<std::string>{
+        "https://h/mpd/v0-001.m4s", "https://h/mpd/v0-002.m4s", "https://h/mpd/v0-003.m4s"}));
+
+    const char* LIST =
+        "<MPD><Period><BaseURL>https://h/v/</BaseURL><AdaptationSet mimeType=\"video/mp4\">"
+        "<Representation id=\"r0\" bandwidth=\"500000\"><SegmentList duration=\"2\">"
+        "<Initialization sourceURL=\"init.mp4\"/><SegmentURL media=\"seg1.m4s\"/>"
+        "<SegmentURL media=\"seg2.m4s\"/></SegmentList></Representation></AdaptationSet></Period></MPD>";
+    auto l = parse_manifest(LIST, "https://h/mpd/x.mpd");
+    CHECK(l.init_url && *l.init_url == "https://h/v/init.mp4");
+    CHECK((l.segment_urls == std::vector<std::string>{"https://h/v/seg1.m4s", "https://h/v/seg2.m4s"}));
+
+    const char* BASE =
+        "<MPD><Period><AdaptationSet mimeType=\"video/mp4\"><Representation id=\"r0\" bandwidth=\"900000\">"
+        "<BaseURL>video-900k.mp4</BaseURL><SegmentBase indexRange=\"0-999\">"
+        "<Initialization range=\"0-833\"/></SegmentBase></Representation></AdaptationSet></Period></MPD>";
+    auto b = parse_manifest(BASE, "https://h/mpd/x.mpd");
+    CHECK(!b.init_url.has_value());
+    CHECK((b.segment_urls == std::vector<std::string>{"https://h/mpd/video-900k.mp4"}));
+}
+
 int main() {
     test_plan_segments();
     test_parse_rate();
@@ -209,6 +304,9 @@ int main() {
     test_batch();
     test_storage_roundtrip();
     test_manager();
+    test_aes();
+    test_hls();
+    test_dash();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;
