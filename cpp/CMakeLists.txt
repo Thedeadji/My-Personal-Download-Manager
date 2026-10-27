@@ -24,6 +24,8 @@ add_library(mpdm_core
     src/aes128.cpp
     src/hls.cpp
     src/dash.cpp
+    src/muxer.cpp
+    src/grabber.cpp
 )
 target_include_directories(mpdm_core PUBLIC include)
 target_link_libraries(mpdm_core PUBLIC

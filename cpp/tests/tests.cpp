@@ -14,6 +14,7 @@
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
 #include "mpdm/dash.hpp"
+#include "mpdm/grabber.hpp"
 #include "mpdm/hls.hpp"
 #include "mpdm/manager.hpp"
 #include "mpdm/models.hpp"
@@ -297,6 +298,32 @@ static void test_dash() {
     CHECK((b.segment_urls == std::vector<std::string>{"https://h/mpd/video-900k.mp4"}));
 }
 
+static void test_grabber_plan() {
+    // Unencrypted media playlist -> empty plan (nothing to decrypt), no network.
+    const char* PLAIN =
+        "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:4.0,\nseg0.ts\n#EXTINF:4.0,\nseg1.ts\n#EXT-X-ENDLIST\n";
+    auto plain = parse_media(PLAIN, "https://h/v/index.m3u8");
+    CHECK(!plain.is_encrypted());
+    CHECK(hls_decrypt_plan(plain, HttpOptions{}).empty());
+
+    // SAMPLE-AES must be rejected (only AES-128 is supported) — throws before any
+    // key fetch, so this stays network-free.
+    const char* SAMPLE =
+        "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"https://h/k.key\"\n"
+        "#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n";
+    auto sample = parse_media(SAMPLE, "https://h/v/index.m3u8");
+    CHECK(sample.is_encrypted());
+    bool threw = false;
+    try {
+        hls_decrypt_plan(sample, HttpOptions{});
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 int main() {
     test_plan_segments();
     test_parse_rate();
@@ -307,6 +334,7 @@ int main() {
     test_aes();
     test_hls();
     test_dash();
+    test_grabber_plan();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;
