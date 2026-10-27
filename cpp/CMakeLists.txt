@@ -29,6 +29,7 @@ add_library(mpdm_core
     src/grabber.cpp
     src/gdrive.cpp
     src/cli.cpp
+    src/native_host.cpp
 )
 target_include_directories(mpdm_core PUBLIC include)
 target_link_libraries(mpdm_core PUBLIC
@@ -40,6 +41,9 @@ target_link_libraries(mpdm_core PUBLIC
 
 add_executable(mpdm src/main.cpp)
 target_link_libraries(mpdm PRIVATE mpdm_core)
+
+add_executable(mpdm_host src/host_main.cpp)
+target_link_libraries(mpdm_host PRIVATE mpdm_core)
 
 add_executable(mpdm_tests tests/tests.cpp)
 target_link_libraries(mpdm_tests PRIVATE mpdm_core)

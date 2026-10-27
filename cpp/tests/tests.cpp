@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "mpdm/hls.hpp"
 #include "mpdm/manager.hpp"
 #include "mpdm/models.hpp"
+#include "mpdm/native_host.hpp"
 #include "mpdm/ratelimit.hpp"
 #include "mpdm/segments.hpp"
 #include "mpdm/storage.hpp"
@@ -391,6 +393,29 @@ static void test_gdrive() {
     CHECK(!drive_file_id("https://drive.google.com/").has_value());
 }
 
+static void test_native_framing() {
+    // Round-trip a message through the 4-byte-LE length framing.
+    std::stringstream buf;
+    std::string body = R"({"type":"download","url":"https://h/x","connections":4})";
+    write_frame(buf, body);
+    // The prefix is the little-endian byte length.
+    std::string raw = buf.str();
+    CHECK(raw.size() == body.size() + 4);
+    CHECK(static_cast<unsigned char>(raw[0]) == (body.size() & 0xFF));
+    auto got = read_frame(buf);
+    CHECK(got.has_value());
+    CHECK(*got == body);
+    // A truncated stream yields nullopt rather than a bogus message.
+    std::stringstream half;
+    half.write(raw.data(), 2);
+    CHECK(!read_frame(half).has_value());
+
+    CHECK(is_stream_job("https://h/v/index.m3u8", false));
+    CHECK(is_stream_job("https://h/v/manifest.mpd", false));
+    CHECK(is_stream_job("https://h/plain.bin", true));   // explicit flag
+    CHECK(!is_stream_job("https://h/plain.bin", false));
+}
+
 int main() {
     test_plan_segments();
     test_parse_rate();
@@ -405,6 +430,7 @@ int main() {
     test_config_ua();
     test_clean();
     test_gdrive();
+    test_native_framing();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;
