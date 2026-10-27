@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -120,6 +121,47 @@ std::string unique_dest(const std::string& dir, const std::string& filename) {
         if (!fs::exists(cand, ec) && !fs::exists(sidecar_path(cand.string()), ec))
             return cand.string();
     }
+}
+
+CleanResult clean_dir(const std::string& dir, bool purge_partials) {
+    CleanResult res;
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return res;
+
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
+        const fs::path& p = entry.path();
+        std::string ext = p.extension().string();
+        if (ext == ".mpdm") {
+            std::string side = p.string();
+            std::string dest = side.substr(0, side.size() - 5);  // strip ".mpdm"
+            bool incomplete = true;
+            if (auto rec = load_record(dest)) {
+                incomplete = rec->segments.empty() ||
+                             !std::all_of(rec->segments.begin(), rec->segments.end(),
+                                          [](const Segment& s) { return s.complete(); });
+            }
+            if (purge_partials && incomplete && fs::exists(dest, ec)) {
+                std::error_code rec_ec;
+                if (fs::remove(dest, rec_ec))
+                    res.partials.push_back(dest);
+                else
+                    res.kept_locked.push_back(dest);
+            }
+            std::error_code side_ec;
+            if (fs::remove(side, side_ec))
+                res.sidecars.push_back(side);
+            else
+                res.kept_locked.push_back(side);
+        } else if (ext == ".tmp") {
+            std::error_code tmp_ec;
+            if (fs::remove(p, tmp_ec))
+                res.tmp.push_back(p.string());
+            else
+                res.kept_locked.push_back(p.string());
+        }
+    }
+    return res;
 }
 
 std::string ensure_hidden_dir(const std::string& path) {

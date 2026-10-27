@@ -28,4 +28,12 @@ struct Settings {
     bool dynamic_segmentation = true;
 };
 
+// Map a UA choice to a header string: ""/"default"/"honest" -> honest default;
+// "browser"/"chrome" -> the browser preset; anything else is used verbatim.
+std::string resolve_user_agent(const std::string& value);
+
+// Overlay MDM_* environment variables onto defaults (env wins). Mirrors
+// Settings.from_env() in the Python config.
+Settings settings_from_env();
+
 } // namespace mpdm

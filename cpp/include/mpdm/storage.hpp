@@ -2,6 +2,7 @@
 #pragma once
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "mpdm/models.hpp"
 
@@ -23,5 +24,17 @@ std::string unique_dest(const std::string& dir, const std::string& filename);
 
 // Create a directory and mark it hidden (Windows). Returns the path.
 std::string ensure_hidden_dir(const std::string& path);
+
+// Summary of what clean_dir removed/kept.
+struct CleanResult {
+    std::vector<std::string> sidecars;      // *.mpdm removed
+    std::vector<std::string> partials;      // incomplete target files removed (purge only)
+    std::vector<std::string> tmp;           // *.tmp checkpoints removed
+    std::vector<std::string> kept_locked;   // couldn't remove (in use)
+};
+
+// Remove orphaned resume sidecars (and .tmp checkpoints) in `dir`. With
+// purge_partials, also delete the incomplete target file each stale sidecar names.
+CleanResult clean_dir(const std::string& dir, bool purge_partials = false);
 
 } // namespace mpdm

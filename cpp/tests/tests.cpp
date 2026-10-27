@@ -13,6 +13,7 @@
 #include "mpdm/aes128.hpp"
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
+#include "mpdm/config.hpp"
 #include "mpdm/dash.hpp"
 #include "mpdm/grabber.hpp"
 #include "mpdm/hls.hpp"
@@ -324,6 +325,56 @@ static void test_grabber_plan() {
     CHECK(threw);
 }
 
+static void test_config_ua() {
+    CHECK(resolve_user_agent("") == DEFAULT_USER_AGENT);
+    CHECK(resolve_user_agent("default") == DEFAULT_USER_AGENT);
+    CHECK(resolve_user_agent("honest") == DEFAULT_USER_AGENT);
+    CHECK(resolve_user_agent("browser") == BROWSER_USER_AGENT);
+    CHECK(resolve_user_agent("Chrome") == BROWSER_USER_AGENT);
+    CHECK(resolve_user_agent("MyCustomAgent/1.0") == "MyCustomAgent/1.0");
+}
+
+static void test_clean() {
+    fs::path dir = fs::temp_directory_path() / ("mpdm_clean_" + std::to_string(std::time(nullptr)));
+    fs::create_directories(dir);
+
+    // An incomplete download: a target file + a sidecar whose segment isn't done.
+    std::string dest = (dir / "file.bin").string();
+    { std::ofstream(dest, std::ios::binary) << "partial"; }
+    TaskRecord rec;
+    rec.url = "http://h/file.bin";
+    rec.dest_path = dest;
+    rec.size = 1000;
+    Segment seg;
+    seg.index = 0; seg.start = 0; seg.end = 999; seg.downloaded = 7;  // not complete
+    rec.segments.push_back(seg);
+    rec.status = "downloading";
+    save_record(dest, rec);
+    CHECK(fs::exists(sidecar_path(dest)));
+
+    // A stray checkpoint file.
+    std::string tmp = (dir / "stray.tmp").string();
+    { std::ofstream(tmp, std::ios::binary) << "x"; }
+
+    // Without --purge: sidecar + tmp go, the incomplete file stays.
+    CleanResult r1 = clean_dir(dir.string(), /*purge*/ false);
+    CHECK(r1.sidecars.size() == 1);
+    CHECK(r1.tmp.size() == 1);
+    CHECK(r1.partials.empty());
+    CHECK(!fs::exists(sidecar_path(dest)));
+    CHECK(fs::exists(dest));
+
+    // Recreate the sidecar; with --purge the incomplete file goes too.
+    save_record(dest, rec);
+    CleanResult r2 = clean_dir(dir.string(), /*purge*/ true);
+    CHECK(r2.sidecars.size() == 1);
+    CHECK(r2.partials.size() == 1);
+    CHECK(!fs::exists(dest));
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 int main() {
     test_plan_segments();
     test_parse_rate();
@@ -335,6 +386,8 @@ int main() {
     test_hls();
     test_dash();
     test_grabber_plan();
+    test_config_ua();
+    test_clean();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;

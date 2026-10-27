@@ -14,6 +14,7 @@ find_package(pugixml CONFIG REQUIRED)
 
 # Ported backend layers (grows per ../PORTING.md).
 add_library(mpdm_core
+    src/config.cpp
     src/ratelimit.cpp
     src/categories.cpp
     src/batch.cpp
@@ -26,6 +27,7 @@ add_library(mpdm_core
     src/dash.cpp
     src/muxer.cpp
     src/grabber.cpp
+    src/cli.cpp
 )
 target_include_directories(mpdm_core PUBLIC include)
 target_link_libraries(mpdm_core PUBLIC
