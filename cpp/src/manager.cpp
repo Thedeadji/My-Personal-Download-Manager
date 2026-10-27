@@ -9,6 +9,8 @@
 #include <fstream>
 #include <random>
 
+#include <thread>
+
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
 #include "mpdm/storage.hpp"
@@ -17,6 +19,60 @@ namespace fs = std::filesystem;
 using nlohmann::json;
 
 namespace mpdm {
+
+// ---- settings.json prefs ---------------------------------------------------
+
+static std::string prefs_path() { return (fs::path(state_dir()) / "settings.json").string(); }
+
+static json settings_to_json(const Settings& s) {
+    return {{"connections", s.connections},
+            {"min_segment_size", s.min_segment_size},
+            {"connect_timeout", s.connect_timeout},
+            {"read_timeout", s.read_timeout},
+            {"max_retries", s.max_retries},
+            {"retry_backoff", s.retry_backoff},
+            {"user_agent", s.user_agent},
+            {"output_dir", s.output_dir},
+            {"verify_tls", s.verify_tls},
+            {"proxy", s.proxy},
+            {"max_rate_bps", s.max_rate_bps},
+            {"categorize", s.categorize},
+            {"category_dirs", s.category_dirs},
+            {"dynamic_segmentation", s.dynamic_segmentation}};
+}
+
+static void apply_settings_json(Settings& s, const json& j) {
+    if (!j.is_object()) return;
+    s.connections = j.value("connections", s.connections);
+    s.min_segment_size = j.value("min_segment_size", s.min_segment_size);
+    s.connect_timeout = j.value("connect_timeout", s.connect_timeout);
+    s.read_timeout = j.value("read_timeout", s.read_timeout);
+    s.max_retries = j.value("max_retries", s.max_retries);
+    s.retry_backoff = j.value("retry_backoff", s.retry_backoff);
+    s.user_agent = j.value("user_agent", s.user_agent);
+    s.output_dir = j.value("output_dir", s.output_dir);
+    s.verify_tls = j.value("verify_tls", s.verify_tls);
+    s.proxy = j.value("proxy", s.proxy);
+    s.max_rate_bps = j.value("max_rate_bps", s.max_rate_bps);
+    s.categorize = j.value("categorize", s.categorize);
+    if (j.contains("category_dirs") && j["category_dirs"].is_object())
+        s.category_dirs = j["category_dirs"].get<std::map<std::string, std::string>>();
+    s.dynamic_segmentation = j.value("dynamic_segmentation", s.dynamic_segmentation);
+}
+
+static json load_prefs() {
+    std::error_code ec;
+    std::string p = prefs_path();
+    if (!fs::exists(p, ec)) return json::object();
+    try {
+        std::ifstream f(p, std::ios::binary);
+        json root;
+        f >> root;
+        return root;
+    } catch (const std::exception&) {
+        return json::object();
+    }
+}
 
 static double now_epoch() {
     using namespace std::chrono;
@@ -59,10 +115,35 @@ DownloadManager::DownloadManager(Settings s, int max_concurrent, long long globa
       max_concurrent(max_concurrent),
       global_limiter_(static_cast<double>(global_rate_bps)),
       store_((fs::path(state_dir()) / "downloads.json").string()) {
+    // Precedence: defaults (the passed Settings) -> settings.json -> environment.
+    json prefs = load_prefs();
+    if (prefs.contains("settings")) apply_settings_json(settings, prefs["settings"]);
+    apply_env(settings);
+    this->max_concurrent = prefs.value("max_concurrent", max_concurrent);
+    global_limiter_.set_rate(prefs.value("global_rate_bps", static_cast<double>(global_rate_bps)));
+    on_done_action = prefs.value("on_done_action", std::string("none"));
+    on_done_command = prefs.value("on_done_command", std::string(""));
+    clip_monitor_pref = prefs.value("clip_monitor", false);
+
+    // Scheduler: created + loaded here, started only on start_scheduler().
+    scheduler_ = std::make_unique<Scheduler>(
+        std::map<std::string, Scheduler::Action>{
+            {"pause_all", [this](const ScheduleRule&) { pause_all(); }},
+            {"resume_all", [this](const ScheduleRule&) { resume_all(); }},
+            {"set_global_rate",
+             [this](const ScheduleRule& r) { set_global_rate(static_cast<double>(r.rate_bps)); }},
+        },
+        (fs::path(state_dir()) / "schedule.json").string());
+    scheduler_->load();
+
     load();
+    sweep_incognito();
 }
 
-DownloadManager::~DownloadManager() { shutdown(); }
+DownloadManager::~DownloadManager() {
+    if (scheduler_) scheduler_->stop();
+    shutdown();
+}
 
 void DownloadManager::shutdown() {
     shutting_ = true;
@@ -216,6 +297,7 @@ void DownloadManager::pump() {
         if (it == items_.end() || it->second->status != ST_QUEUED) continue;
         auto item = it->second;
         item->status = ST_DOWNLOADING;
+        on_complete_fired_ = false;  // new work -> allow the finish action to fire again
         --slots;
         threads_.emplace_back([this, item] { run(item); });
     }
@@ -272,6 +354,7 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
     item->dl = nullptr;
     save();
     pump();
+    maybe_on_complete();
 }
 
 void DownloadManager::pause(const std::string& id) {
@@ -376,6 +459,129 @@ void DownloadManager::set_item_rate(const std::string& id, long long bps) {
     if (it == items_.end()) return;
     it->second->max_rate_bps = bps > 0 ? bps : 0;
     if (it->second->dl) it->second->dl->set_rate(static_cast<double>(it->second->max_rate_bps));
+    save();
+}
+
+// ---- settings persistence --------------------------------------------------
+void DownloadManager::save_settings() {
+    json prefs = {{"settings", settings_to_json(settings)},
+                  {"max_concurrent", max_concurrent},
+                  {"global_rate_bps", global_rate_bps()},
+                  {"on_done_action", on_done_action},
+                  {"on_done_command", on_done_command},
+                  {"clip_monitor", clip_monitor_pref}};
+    try {
+        std::string p = prefs_path();
+        std::string tmp = p + ".tmp";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            f << prefs.dump(2);
+        }
+        fs::rename(tmp, p);
+    } catch (const std::exception&) {
+    }
+}
+
+// ---- "when everything finishes" action -------------------------------------
+void DownloadManager::set_on_complete(const std::string& action, const std::string& command) {
+    on_done_action = (action == "run" || action == "sleep" || action == "shutdown") ? action : "none";
+    on_done_command = command;
+    on_complete_fired_ = false;
+}
+
+bool DownloadManager::queue_all_done() {
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    bool any_completed = false;
+    for (const auto& kv : items_) {
+        const std::string& st = kv.second->status;
+        if (st == ST_DOWNLOADING || st == ST_QUEUED) return false;
+        if (st == ST_COMPLETED) any_completed = true;
+    }
+    return any_completed;
+}
+
+void DownloadManager::maybe_on_complete() {
+    if (on_done_action == "none") return;
+    std::string action, cmd;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        if (on_complete_fired_ || !queue_all_done()) return;
+        on_complete_fired_ = true;
+        action = on_done_action;
+        cmd = on_done_command;
+    }
+    run_completion_action(action, cmd);
+}
+
+void DownloadManager::run_completion_action(const std::string& action, const std::string& command) {
+    try {
+#ifdef _WIN32
+        if (action == "run" && !command.empty()) {
+            std::system(("start \"\" " + command).c_str());
+        } else if (action == "shutdown") {
+            std::system("shutdown /s /t 60");  // cancel with: shutdown /a
+        } else if (action == "sleep") {
+            std::system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0");
+        }
+#elif defined(__APPLE__)
+        if (action == "run" && !command.empty()) std::system((command + " &").c_str());
+        else if (action == "shutdown")
+            std::system("osascript -e 'tell application \"System Events\" to shut down' &");
+        else if (action == "sleep") std::system("pmset sleepnow &");
+#else
+        if (action == "run" && !command.empty()) std::system((command + " &").c_str());
+        else if (action == "shutdown") std::system("shutdown -h +1 &");
+        else if (action == "sleep") std::system("systemctl suspend &");
+#endif
+    } catch (...) {
+    }
+}
+
+// ---- scheduler wrappers ----------------------------------------------------
+void DownloadManager::start_scheduler() { if (scheduler_) scheduler_->start(); }
+void DownloadManager::stop_scheduler() { if (scheduler_) scheduler_->stop(); }
+
+ScheduleRule DownloadManager::add_schedule(const std::string& action, const std::string& at,
+                                           const std::string& repeat, std::vector<int> days,
+                                           long long rate_bps) {
+    return scheduler_->add_rule(action, at, repeat, std::move(days), rate_bps);
+}
+void DownloadManager::remove_schedule(const std::string& id) { scheduler_->remove_rule(id); }
+void DownloadManager::set_schedule_enabled(const std::string& id, bool enabled) {
+    scheduler_->set_enabled(id, enabled);
+}
+std::vector<ScheduleRule> DownloadManager::list_schedules() { return scheduler_->list_rules(); }
+
+// ---- incognito lifecycle ---------------------------------------------------
+void DownloadManager::sweep_incognito() {
+    std::string d = (fs::path(settings.output_dir) / INCOGNITO_DIRNAME).string();
+    std::error_code ec;
+    if (fs::is_directory(d, ec)) {
+        try {
+            clean_dir(d, /*purge_partials=*/true);
+        } catch (const std::exception&) {
+        }
+    }
+}
+
+void DownloadManager::wait_dl_release(const std::shared_ptr<DownloadItem>& it) {
+    for (int i = 0; i < 60 && it->dl != nullptr; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+void DownloadManager::purge_incognito_incomplete() {
+    for (auto& it : ordered()) {
+        if (!it->incognito || it->status == ST_COMPLETED) continue;
+        bool active = (it->status == ST_DOWNLOADING && it->dl != nullptr);
+        if (active) it->dl->cancel();
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            items_.erase(it->id);
+            order_.erase(std::remove(order_.begin(), order_.end(), it->id), order_.end());
+        }
+        if (active) wait_dl_release(it);
+        delete_files(it->dest_path);
+    }
     save();
 }
 

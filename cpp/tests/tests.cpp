@@ -23,6 +23,7 @@
 #include "mpdm/models.hpp"
 #include "mpdm/native_host.hpp"
 #include "mpdm/ratelimit.hpp"
+#include "mpdm/scheduler.hpp"
 #include "mpdm/segments.hpp"
 #include "mpdm/storage.hpp"
 
@@ -416,6 +417,88 @@ static void test_native_framing() {
     CHECK(!is_stream_job("https://h/plain.bin", false));
 }
 
+static void test_manager_persistence() {
+    auto tmp = (fs::temp_directory_path() /
+                fs::path("mpdm_prefs_" + std::to_string(::time(nullptr)))).string();
+    fs::create_directories(tmp);
+    set_home(tmp);
+
+    {
+        mpdm::DownloadManager m(mpdm::Settings{}, 2, 0);
+        m.settings.connections = 11;
+        m.settings.output_dir = "D:/Downloads/test";
+        m.max_concurrent = 5;
+        m.set_global_rate(750 * 1024);
+        m.set_on_complete("shutdown", "");
+        m.clip_monitor_pref = true;
+        m.save_settings();
+        m.add_schedule("resume_all", "01:30");
+        m.add_schedule("pause_all", "07:00");
+    }
+
+    // A fresh manager reloads settings.json + schedule.json.
+    {
+        mpdm::DownloadManager m2(mpdm::Settings{}, 2, 0);
+        CHECK(m2.settings.connections == 11);
+        CHECK(m2.settings.output_dir == "D:/Downloads/test");
+        CHECK(m2.max_concurrent == 5);
+        CHECK(m2.global_rate_bps() == 750 * 1024);
+        CHECK(m2.on_done_action == "shutdown");
+        CHECK(m2.clip_monitor_pref == true);
+        CHECK(m2.list_schedules().size() == 2);
+    }
+
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+}
+
+static void test_scheduler() {
+    std::tm t{};
+    t.tm_year = 2026 - 1900; t.tm_mon = 5; t.tm_mday = 15;  // 2026-06-15
+    t.tm_hour = 12; t.tm_min = 0; t.tm_sec = 0; t.tm_isdst = -1;
+    std::time_t noon = std::mktime(&t);
+
+    ScheduleRule daily;
+    daily.action = "resume_all"; daily.at = "12:00"; daily.repeat = "daily"; daily.enabled = true;
+    CHECK(rule_fires_between(daily, noon - 60, noon + 60));    // crosses 12:00 -> fires
+    CHECK(!rule_fires_between(daily, noon + 60, noon + 120));  // already past
+    CHECK(!rule_fires_between(daily, noon - 120, noon - 60));  // not yet
+    daily.enabled = false;
+    CHECK(!rule_fires_between(daily, noon - 60, noon + 60));   // disabled -> never
+
+    // Weekday filter (computed, so the test isn't calendar-fragile).
+    std::tm lt = *std::localtime(&noon);
+    int pywd = (lt.tm_wday + 6) % 7;  // 0=Mon..6=Sun
+    ScheduleRule dfilter;
+    dfilter.action = "resume_all"; dfilter.at = "12:00"; dfilter.enabled = true;
+    dfilter.days = {pywd};
+    CHECK(rule_fires_between(dfilter, noon - 60, noon + 60));
+    dfilter.days = {(pywd + 1) % 7};
+    CHECK(!rule_fires_between(dfilter, noon - 60, noon + 60));
+
+    // One-shot ISO rule.
+    ScheduleRule once;
+    once.action = "pause_all"; once.at = "2026-06-15T12:00"; once.repeat = "once"; once.enabled = true;
+    CHECK(rule_fires_between(once, noon - 60, noon + 60));
+    CHECK(!rule_fires_between(once, noon + 60, noon + 120));
+
+    // Edge-triggered firing via the Scheduler with an injected clock.
+    int fired = 0;
+    Scheduler sch({{"resume_all", [&](const ScheduleRule&) { ++fired; }}}, /*store=*/"");
+    sch.add_rule("resume_all", "12:00");
+    sch.tick(noon - 120);  // first tick = baseline, no backfire
+    CHECK(fired == 0);
+    sch.tick(noon + 60);   // crosses 12:00 -> fires once
+    CHECK(fired == 1);
+    sch.tick(noon + 120);  // no re-cross -> no refire
+    CHECK(fired == 1);
+
+    // An unknown action is rejected up front.
+    bool threw = false;
+    try { sch.add_rule("not_an_action", "01:00"); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+}
+
 int main() {
     test_plan_segments();
     test_parse_rate();
@@ -431,6 +514,8 @@ int main() {
     test_clean();
     test_gdrive();
     test_native_framing();
+    test_scheduler();
+    test_manager_persistence();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;

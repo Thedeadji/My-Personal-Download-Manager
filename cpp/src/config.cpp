@@ -41,8 +41,7 @@ static bool truthy(const std::string& v) {
     return !(s == "0" || s == "false" || s == "no" || s.empty());
 }
 
-Settings settings_from_env() {
-    Settings s;
+void apply_env(Settings& s) {
     std::string v;
     if (env("MDM_CONNECTIONS", v)) {
         try {
@@ -61,6 +60,11 @@ Settings settings_from_env() {
     if (env("MDM_CATEGORIZE", v)) s.categorize = truthy(v);
     if (env("MDM_PROXY", v)) s.proxy = strip(v);
     if (env("MDM_DYNAMIC", v)) s.dynamic_segmentation = truthy(v);
+}
+
+Settings settings_from_env() {
+    Settings s;
+    apply_env(s);
     return s;
 }
 

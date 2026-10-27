@@ -16,6 +16,7 @@ find_package(httplib CONFIG REQUIRED)
 # Ported backend layers (grows per ../PORTING.md).
 add_library(mpdm_core
     src/config.cpp
+    src/scheduler.cpp
     src/ratelimit.cpp
     src/categories.cpp
     src/batch.cpp

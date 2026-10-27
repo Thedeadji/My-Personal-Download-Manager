@@ -13,6 +13,7 @@
 #include "mpdm/config.hpp"
 #include "mpdm/engine.hpp"
 #include "mpdm/ratelimit.hpp"
+#include "mpdm/scheduler.hpp"
 
 namespace mpdm {
 
@@ -83,12 +84,39 @@ public:
     void load();
     void shutdown();  // cancel everything and join worker threads
 
+    // Persist settings + manager-level prefs to settings.json.
+    void save_settings();
+
+    // Run a program / sleep / shut down when the whole queue finishes.
+    void set_on_complete(const std::string& action, const std::string& command = "");
+
+    // Scheduler (thin wrappers; the thread is not started until start_scheduler()).
+    void start_scheduler();
+    void stop_scheduler();
+    ScheduleRule add_schedule(const std::string& action, const std::string& at,
+                              const std::string& repeat = "daily", std::vector<int> days = {},
+                              long long rate_bps = 0);
+    void remove_schedule(const std::string& id);
+    void set_schedule_enabled(const std::string& id, bool enabled);
+    std::vector<ScheduleRule> list_schedules();
+
+    // Incognito lifecycle: clear hard-kill leftovers / purge unfinished on close.
+    void sweep_incognito();
+    void purge_incognito_incomplete();
+
     Settings settings;
     int max_concurrent;
+    std::string on_done_action = "none";  // none | run | sleep | shutdown
+    std::string on_done_command;
+    bool clip_monitor_pref = false;       // remembered UI pref (clipboard monitoring)
 
 private:
     void run(std::shared_ptr<DownloadItem> it);
     void delete_files(const std::string& dest_path);
+    bool queue_all_done();
+    void maybe_on_complete();
+    void run_completion_action(const std::string& action, const std::string& command);
+    void wait_dl_release(const std::shared_ptr<DownloadItem>& it);
 
     std::map<std::string, std::shared_ptr<DownloadItem>> items_;
     std::vector<std::string> order_;
@@ -97,6 +125,8 @@ private:
     std::string store_;
     std::vector<std::thread> threads_;
     std::atomic<bool> shutting_{false};
+    std::atomic<bool> on_complete_fired_{false};
+    std::unique_ptr<Scheduler> scheduler_;
 };
 
 } // namespace mpdm

@@ -206,6 +206,7 @@ static void open_in_browser(const std::string& url) {
 
 int run_web(const std::string& host, int port, bool open_browser) {
     DownloadManager manager(Settings{}, 3, 0);
+    manager.start_scheduler();
     httplib::Server svr;
 
     auto send_json = [](httplib::Response& res, const json& j, int code = 200) {
