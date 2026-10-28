@@ -52,3 +52,10 @@ target_link_libraries(mpdm_host PRIVATE mpdm_core)
 add_executable(mpdm_tests tests/tests.cpp)
 target_link_libraries(mpdm_tests PRIVATE mpdm_core)
 add_test(NAME mpdm_tests COMMAND mpdm_tests)
+
+# Desktop GUI (Qt6). Off by default so the core build needs no Qt; enable with
+# -DMPDM_BUILD_GUI=ON once Qt6 is installed (sets CMAKE_PREFIX_PATH to the Qt dir).
+option(MPDM_BUILD_GUI "Build the Qt6 desktop GUI" OFF)
+if(MPDM_BUILD_GUI)
+    add_subdirectory(gui)
+endif()
