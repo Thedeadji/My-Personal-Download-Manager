@@ -1,5 +1,6 @@
 # CMake / build output
 build/
+build-gui/
 out/
 # vcpkg manifest-mode installed tree
 vcpkg_installed/

@@ -93,7 +93,7 @@ void Download::save() {
     save_record(dest_path_, rec);
 }
 
-void Download::emit(bool force) {
+void Download::emit_progress(bool force) {
     if (!cb_) return;
     double now = now_seconds();
     if (!force && (now - last_emit_) < 0.2) return;
@@ -200,7 +200,7 @@ void Download::download_segment(Segment* seg) {
             { std::lock_guard<std::mutex> lk(mu_); seg->downloaded += static_cast<long long>(towrite);
               done = seg->complete(); }
             throttle(static_cast<long long>(towrite));
-            emit();
+            emit_progress();
             return !done;  // false stops the transfer once this segment is done
         };
 
@@ -244,7 +244,7 @@ std::string Download::download_single() {
             { std::lock_guard<std::mutex> lk(file_mu_); file_.write(data, (std::streamsize)len); }
             { std::lock_guard<std::mutex> lk(mu_); segments_[0].downloaded += (long long)len; }
             throttle((long long)len);
-            emit();
+            emit_progress();
             return true;
         };
         try {
@@ -260,11 +260,11 @@ std::string Download::download_single() {
         }
     }
     file_.close();
-    if (cancel_) { status_ = Status::Failed; emit(true); throw DownloadError("cancelled"); }
-    if (pause_) { status_ = Status::Paused; save(); emit(true); throw DownloadError("paused"); }
+    if (cancel_) { status_ = Status::Failed; emit_progress(true); throw DownloadError("cancelled"); }
+    if (pause_) { status_ = Status::Paused; save(); emit_progress(true); throw DownloadError("paused"); }
     status_ = Status::Completed;
     clear_record(dest_path_);
-    emit(true);
+    emit_progress(true);
     return dest_path_;
 }
 
@@ -280,7 +280,7 @@ void Download::finish_common() {
         }
     }
     clear_record(dest_path_);
-    emit(true);
+    emit_progress(true);
 }
 
 std::string Download::start() {
@@ -297,7 +297,7 @@ std::string Download::start() {
     }
 
     status_ = Status::Probing;
-    emit(true);
+    emit_progress(true);
     info_ = probe(url_, http_opts());
 
     // Guard: don't silently save Drive's HTML confirmation/sign-in page.
@@ -306,7 +306,7 @@ std::string Download::start() {
         std::transform(ct.begin(), ct.end(), ct.begin(), ::tolower);
         if (ct.rfind("text/html", 0) == 0) {
             status_ = Status::Failed;
-            emit(true);
+            emit_progress(true);
             throw DownloadError(
                 "Google Drive returned its confirmation/sign-in page, not the file. The file may "
                 "be private (download via the browser extension while signed in) or require manual "
@@ -366,7 +366,7 @@ std::string Download::start() {
     }
 
     status_ = Status::Downloading;
-    emit(true);
+    emit_progress(true);
     save();
 
     file_.open(dest_path_, std::ios::binary | std::ios::in | std::ios::out);
@@ -410,9 +410,9 @@ std::string Download::start() {
     { std::lock_guard<std::mutex> lk(file_mu_); if (file_.is_open()) file_.close(); }
     save();
 
-    if (cancel_) { status_ = Status::Failed; emit(true); throw DownloadError("cancelled"); }
-    if (pause_) { status_ = Status::Paused; save(); emit(true); throw DownloadError("paused"); }
-    if (!errors.empty()) { status_ = Status::Failed; save(); emit(true); throw DownloadError(errors.front()); }
+    if (cancel_) { status_ = Status::Failed; emit_progress(true); throw DownloadError("cancelled"); }
+    if (pause_) { status_ = Status::Paused; save(); emit_progress(true); throw DownloadError("paused"); }
+    if (!errors.empty()) { status_ = Status::Failed; save(); emit_progress(true); throw DownloadError(errors.front()); }
 
     bool all_done = true;
     for (const auto& s : segments_) if (!s.complete()) { all_done = false; break; }

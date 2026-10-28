@@ -43,7 +43,7 @@ private:
     HttpOptions http_opts() const;
     void preallocate(long long size);
     void save();
-    void emit(bool force = false);
+    void emit_progress(bool force = false);
     void throttle(long long n);
     void interruptible_sleep(double seconds);
     Segment* claim_or_split();
