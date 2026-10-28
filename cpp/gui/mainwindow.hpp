@@ -1,11 +1,11 @@
-// MPDM desktop GUI — home window (Qt Widgets), built to the Industrial mockups.
+// MPDM desktop GUI — Industrial main window (Qt Widgets), per DESIGN.md.
 #pragma once
-#include <QLabel>
+#include <QGridLayout>
 #include <QMainWindow>
-#include <QPushButton>
-#include <QTableWidget>
 #include <QTimer>
+#include <QVBoxLayout>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -20,42 +20,37 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override;
+
 private:
     void buildUi();
     void applyTheme();
     void refresh();
     void onAdd();
-    std::string selectedId() const;
 
-    QFrame* card(const QString& objName = "card");
-    QWidget* statCard(const QString& title, QLabel*& valueOut);
-    QWidget* categorySidebar();
+    // register a widget that has setPalette(const Palette*)
+    template <class W>
+    W* themed(W* w) {
+        themed_.push_back([w](const Palette* p) { w->setPalette(p); });
+        return w;
+    }
 
     mpdm::DownloadManager manager_;
-    Palette pal_ = darkPalette();
+    const Palette* pal_ = &kDark;
+    std::vector<std::function<void(const Palette*)>> themed_;
 
-    QLabel* statSpeed_ = nullptr;
-    QLabel* statSlots_ = nullptr;
-    QLabel* statToday_ = nullptr;
-    QLabel* statSched_ = nullptr;
-    ThroughputChart* chart_ = nullptr;
-    QTableWidget* table_ = nullptr;
+    Graph* graph_ = nullptr;
+    LedMeter* speedMeter_ = nullptr;
+    LedMeter* selMeter_ = nullptr;
+    Lanes* lanes_ = nullptr;
+    QWidget* slotLamps_ = nullptr;
+    QGridLayout* catsLay_ = nullptr;
+    QVBoxLayout* statusLay_ = nullptr;
+    QVBoxLayout* rowsLay_ = nullptr;
 
-    QLabel* selName_ = nullptr;
-    QLabel* selHost_ = nullptr;
-    QLabel* selPct_ = nullptr;
-    QLabel* selSize_ = nullptr;
-    QLabel* selState_ = nullptr;
-    SegmentBar* selBar_ = nullptr;
-    ConnectionsPanel* conns_ = nullptr;
-    QLabel* selSpeed_ = nullptr;
-    QLabel* selEta_ = nullptr;
-    QLabel* selSaveTo_ = nullptr;
-
-    QPushButton* themeBtn_ = nullptr;
+    QString selId_;
     QTimer timer_;
-    QString selectedId_;
-    std::vector<SegmentBar*> rowBars_;
 };
 
 } // namespace mpdm::gui

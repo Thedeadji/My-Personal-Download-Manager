@@ -2,10 +2,12 @@
 # available. Links the shared mpdm_core backend.
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 qt_standard_project_setup()
+set(CMAKE_AUTORCC ON)
 
 qt_add_executable(mpdm_gui
     main.cpp
     mainwindow.cpp
+    fonts.qrc
 )
 target_include_directories(mpdm_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mpdm_gui PRIVATE mpdm_core Qt6::Widgets)

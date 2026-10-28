@@ -1,0 +1,9 @@
+<!DOCTYPE RCC><RCC version="1.0">
+<qresource prefix="/fonts">
+  <file>fonts/ChakraPetch-Medium.ttf</file>
+  <file>fonts/ChakraPetch-SemiBold.ttf</file>
+  <file>fonts/Barlow-Regular.ttf</file>
+  <file>fonts/Barlow-Medium.ttf</file>
+  <file>fonts/JetBrainsMono.ttf</file>
+</qresource>
+</RCC>
