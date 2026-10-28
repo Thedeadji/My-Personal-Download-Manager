@@ -18,6 +18,7 @@ AppId={{8F3A2C14-6B5D-4E7A-9C1F-2D4E6A8B0C13}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#Publisher}
+AppPublisherURL=https://github.com/Thedeadji/My-Personal-Download-Manager
 DefaultDirName={autopf}\MPDM
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -30,6 +31,10 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; Close a running MPDM (it can be hidden in the tray) so install/uninstall is
+; not blocked by locked files; don't relaunch it afterwards.
+CloseApplications=yes
+RestartApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
