@@ -4,6 +4,7 @@
 #pragma once
 #include <QAbstractButton>
 #include <QFont>
+#include <QIcon>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRadialGradient>
@@ -248,11 +249,30 @@ protected:
 class Logo : public QWidget {
 public:
     explicit Logo(int sz = 22, QWidget* parent = nullptr) : QWidget(parent) { setFixedSize(sz, sz); }
+
+    // Render the shield mark to a square pixmap (for the tray icon / app icon).
+    static QPixmap pixmap(int sz) {
+        QPixmap pm(sz, sz);
+        pm.fill(Qt::transparent);
+        QPainter g(&pm);
+        paint(g, sz, sz);
+        return pm;
+    }
+    static QIcon icon() {
+        QIcon ic;
+        for (int s : {16, 24, 32, 48, 64, 128, 256}) ic.addPixmap(pixmap(s));
+        return ic;
+    }
+
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter g(this);
+        paint(g, width(), height());
+    }
+
+    static void paint(QPainter& g, int w, int h) {
         g.setRenderHint(QPainter::Antialiasing, true);
-        g.scale(width() / 64.0, height() / 64.0);
+        g.scale(w / 64.0, h / 64.0);
         QPainterPath shield; shield.moveTo(6, 10); shield.lineTo(14, 2); shield.lineTo(58, 2);
         shield.lineTo(58, 44); shield.lineTo(32, 62); shield.lineTo(6, 44); shield.closeSubpath();
         g.fillPath(shield, QColor("#222B35"));

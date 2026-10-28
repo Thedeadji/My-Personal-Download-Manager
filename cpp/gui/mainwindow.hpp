@@ -13,6 +13,9 @@
 #include "theme.hpp"
 #include "widgets.hpp"
 
+class QSystemTrayIcon;
+class QCloseEvent;
+
 namespace mpdm::gui {
 
 class MainWindow : public QMainWindow {
@@ -24,6 +27,7 @@ public:
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
+    void closeEvent(QCloseEvent* ev) override;  // close -> minimize to tray
 
 private:
     void buildUi();
@@ -31,6 +35,9 @@ private:
     void refresh();
     void onAdd();
     void applyAppearance(const QString& mode);  // "system" | "light" | "dark"
+    void setupTray();
+    void showFromTray();
+    void quitApp();  // real exit (from tray menu)
 
     // register a widget that has setPalette(const Palette*)
     template <class W>
@@ -54,6 +61,11 @@ private:
 
     QString selId_;
     QTimer timer_;
+
+    QSystemTrayIcon* tray_ = nullptr;
+    bool allowQuit_ = false;        // set true only when quitting for real
+    bool trayHintShown_ = false;    // show the "still running" balloon once
+    int lastFinished_ = 0;          // for finish notifications
 };
 
 } // namespace mpdm::gui

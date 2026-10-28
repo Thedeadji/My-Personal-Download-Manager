@@ -1,6 +1,7 @@
 #include "mainwindow.hpp"
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -8,10 +9,12 @@
 #include <QLabel>
 #include <QGuiApplication>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QScrollArea>
 #include <QSettings>
 #include <QStyleHints>
+#include <QSystemTrayIcon>
 
 #include <cmath>
 #include <map>
@@ -42,12 +45,68 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     resize(1300, 860);
     QSettings s;
     pal_ = paletteForMode(s.value("appearance", "dark").toString());
+    setWindowIcon(Logo::icon());
     manager_.start_scheduler();
     buildUi();
     applyTheme();
+    setupTray();
     connect(&timer_, &QTimer::timeout, this, &MainWindow::refresh);
     timer_.start(1000);
     refresh();
+}
+
+void MainWindow::setupTray() {
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) return;  // no tray -> close quits normally
+    tray_ = new QSystemTrayIcon(Logo::icon(), this);
+    tray_->setToolTip("MyPersonalDownloadManager");
+
+    auto* menu = new QMenu(this);
+    menu->addAction("Open MPDM", this, [this] { showFromTray(); });
+    menu->addSeparator();
+    menu->addAction("Resume all", this, [this] { manager_.resume_all(); refresh(); });
+    menu->addAction("Pause all", this, [this] { manager_.pause_all(); refresh(); });
+    menu->addSeparator();
+    menu->addAction("Exit", this, [this] { quitApp(); });
+    tray_->setContextMenu(menu);
+
+    // Left-click (trigger) or double-click restores the window.
+    connect(tray_, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason r) {
+        if (r == QSystemTrayIcon::Trigger || r == QSystemTrayIcon::DoubleClick) showFromTray();
+    });
+    tray_->show();
+    // With a tray, the app lives on after the window is hidden; only the tray
+    // "Exit" action (quitApp) ends it.
+    qApp->setQuitOnLastWindowClosed(false);
+}
+
+void MainWindow::showFromTray() {
+    showNormal();
+    raise();
+    activateWindow();
+}
+
+void MainWindow::quitApp() {
+    allowQuit_ = true;
+    if (tray_) tray_->hide();
+    qApp->quit();
+}
+
+void MainWindow::closeEvent(QCloseEvent* ev) {
+    // With a tray present, the close button hides to tray instead of quitting
+    // (IDM-style). Real exit goes through the tray "Exit" action / quitApp().
+    if (tray_ && !allowQuit_) {
+        hide();
+        ev->ignore();
+        if (!trayHintShown_) {
+            trayHintShown_ = true;
+            tray_->showMessage("MyPersonalDownloadManager",
+                               "Still running in the background. Downloads continue; "
+                               "right-click the tray icon to exit.",
+                               Logo::icon(), 4000);
+        }
+        return;
+    }
+    QMainWindow::closeEvent(ev);
 }
 
 static void clearLayout(QLayout* l) {
@@ -413,6 +472,16 @@ void MainWindow::refresh() {
     double g = 0; int active = 0; long long dl = 0; int fin = 0;
     for (auto& it : items) { if (it->status == ST_DOWNLOADING) { g += it->speed; active++; } dl += it->downloaded; if (it->status == ST_COMPLETED) fin++; }
     int mc = manager_.max_concurrent;
+
+    // Notify from the tray when a download finishes while minimized.
+    if (tray_ && fin > lastFinished_ && isHidden()) {
+        int done = fin - lastFinished_;
+        tray_->showMessage("Download complete",
+                           done == 1 ? QString("1 download finished.")
+                                     : QString("%1 downloads finished.").arg(done),
+                           Logo::icon(), 4000);
+    }
+    lastFinished_ = fin;
     setText("s_speed", QString::number(g / 1048576.0, 'f', 1));
     setText("s_slots", QString("%1/%2").arg(active).arg(mc));
     { QString hd = human((double)dl); int sp = 0; while (sp < hd.size() && (hd[sp].isDigit() || hd[sp] == '.')) sp++;
