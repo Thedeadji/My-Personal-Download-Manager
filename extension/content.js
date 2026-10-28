@@ -53,26 +53,38 @@
     return [...map.values()];
   }
 
+  // Industrial theme (matches the app/web): chamfered panels, amber accent,
+  // cyan badges. Isolated in the shadow root, so these are the only styles.
   const CSS = `
     :host { all: initial; }
-    .fab { font: 600 13px system-ui, sans-serif; cursor: pointer; border: none;
-      background: #1769ff; color: #fff; border-radius: 20px; padding: 8px 12px;
-      box-shadow: 0 2px 10px rgba(0,0,0,.3); }
-    .fab:hover { background: #0f55db; }
+    .fab { font: 600 12px/1 system-ui, sans-serif; letter-spacing: .04em;
+      cursor: pointer; border: 1px solid #ffa62b;
+      background: #ffa62b; color: #1c1203; padding: 9px 13px;
+      clip-path: polygon(7px 0,100% 0,100% calc(100% - 7px),calc(100% - 7px) 100%,0 100%,0 7px);
+      box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+    .fab:hover { filter: brightness(1.08); }
     .panel { margin-top: 8px; width: 320px; max-height: 320px; overflow: auto;
-      background: #1e1e1e; color: #eee; border-radius: 10px; padding: 8px;
-      box-shadow: 0 6px 24px rgba(0,0,0,.4); font: 13px system-ui, sans-serif; }
+      background: #222b35; color: #e6ebf0; padding: 10px;
+      border: 1px solid #2e3946;
+      clip-path: polygon(10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%,0 10px);
+      box-shadow: 0 6px 24px rgba(0,0,0,.45); font: 13px system-ui, sans-serif; }
     .head { display: flex; justify-content: space-between; align-items: center;
-      font-weight: 600; padding: 2px 4px 8px; }
-    .x { background: transparent; border: none; color: #aaa; font-size: 16px; cursor: pointer; }
-    .row { display: flex; align-items: center; gap: 8px; padding: 6px 4px;
-      border-top: 1px solid #333; }
-    .badge { flex: 0 0 auto; font-size: 10px; font-weight: 700; background: #333;
-      color: #9cd; border-radius: 4px; padding: 2px 5px; }
-    .name { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .dl { flex: 0 0 auto; cursor: pointer; border: none; background: #2a7; color: #fff;
-      border-radius: 6px; padding: 5px 9px; font: inherit; }
-    .dl:disabled { background: #444; color: #999; cursor: default; }
+      font: 600 11px/1 system-ui, sans-serif; letter-spacing: .10em; text-transform: uppercase;
+      color: #8b97a5; padding: 2px 2px 10px; }
+    .x { background: transparent; border: none; color: #8b97a5; font-size: 16px; cursor: pointer; line-height: 1; }
+    .x:hover { color: #ffa62b; }
+    .row { display: flex; align-items: center; gap: 8px; padding: 7px 2px;
+      border-top: 1px solid rgba(255,255,255,.06); }
+    .badge { flex: 0 0 auto; font: 700 10px/1 "JetBrains Mono", ui-monospace, monospace;
+      letter-spacing: .04em; background: #0c1116; color: #3be0ff;
+      border: 1px solid #0e2a33; padding: 3px 5px; }
+    .name { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e6ebf0; }
+    .dl { flex: 0 0 auto; cursor: pointer; border: 1px solid #ffa62b;
+      background: #ffa62b; color: #1c1203; padding: 6px 10px;
+      font: 600 11px/1 system-ui, sans-serif; letter-spacing: .04em;
+      clip-path: polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px); }
+    .dl:hover { filter: brightness(1.08); }
+    .dl:disabled { background: #0c1116; color: #6bd66f; border-color: #0e2a33; cursor: default; filter: none; }
     .empty { opacity: .6; padding: 8px 4px; }
   `;
 

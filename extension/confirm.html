@@ -4,39 +4,103 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Download with MyPersonalDownloadManager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500&family=Chakra+Petch:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
     <style>
-      :root { color-scheme: light dark; }
-      body { font: 13px/1.45 system-ui, sans-serif; margin: 0; padding: 16px; }
-      h1 { font-size: 14px; margin: 0 0 12px; }
-      label { display: block; margin: 10px 0 4px; opacity: 0.8; }
-      input[type="text"], input[type="number"] {
-        width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit;
-        border: 1px solid rgba(127,127,127,.4); border-radius: 6px; background: transparent;
+      :root {
+        --frame: #1a2129;
+        --panel: #222b35;
+        --well: #0c1116;
+        --bevel: #2e3946;
+        --text: #e6ebf0;
+        --text2: #a9b4c1;
+        --text3: #8b97a5;
+        --amber: #ffa62b;
+        --ink: #1c1203;
+        --cyan: #3be0ff;
       }
-      .url { font-size: 12px; opacity: 0.6; word-break: break-all; margin: 2px 0 0; }
+      * { box-sizing: border-box; }
+      body {
+        font-family: "Barlow", system-ui, sans-serif;
+        font-size: 13px; line-height: 1.45;
+        margin: 0; padding: 14px;
+        background: var(--frame); color: var(--text);
+      }
+      .card {
+        background: var(--panel); border: 1px solid var(--bevel);
+        clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+        padding: 16px;
+      }
+      .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+      .head svg { width: 24px; height: 24px; flex: none; }
+      h1 {
+        font-family: "Chakra Petch", sans-serif;
+        font-size: 14px; font-weight: 600; letter-spacing: 0.02em; margin: 0;
+      }
+      label {
+        display: block; margin: 12px 0 5px;
+        font-family: "Chakra Petch", sans-serif;
+        font-size: 10px; font-weight: 600; letter-spacing: 0.10em; text-transform: uppercase;
+        color: var(--text3);
+      }
+      input[type="text"], input[type="number"] {
+        width: 100%; padding: 8px 10px;
+        font-family: "JetBrains Mono", monospace; font-size: 12.5px;
+        color: var(--text); background: var(--well);
+        border: 1px solid var(--bevel); outline: none;
+      }
+      input:focus { border-color: var(--amber); }
+      .url {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px; color: var(--text3); word-break: break-all; margin: 6px 0 0;
+      }
       .row { display: flex; gap: 10px; }
       .row > div { flex: 1; }
-      .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-      button { font: inherit; padding: 7px 16px; border-radius: 6px; cursor: pointer; border: 1px solid rgba(127,127,127,.4); background: transparent; }
-      button.primary { background: #148791; color: #fff; border-color: #148791; }
+      .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+      button {
+        font-family: "Chakra Petch", sans-serif;
+        font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+        padding: 9px 18px; cursor: pointer;
+        background: var(--well); color: var(--text); border: 1px solid var(--bevel);
+        clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+      }
+      button:hover { border-color: var(--amber); color: var(--amber); }
+      button.primary { background: var(--amber); color: var(--ink); border-color: var(--amber); }
+      button.primary:hover { filter: brightness(1.08); color: var(--ink); }
     </style>
   </head>
   <body>
-    <h1>Download this file?</h1>
-    <label for="filename">Save as</label>
-    <input type="text" id="filename" />
-    <p class="url" id="url"></p>
-
-    <div class="row">
-      <div>
-        <label for="connections">Connections</label>
-        <input type="number" id="connections" min="1" max="32" value="8" />
+    <div class="card">
+      <div class="head">
+        <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M6 10 L14 2 L58 2 L58 44 L32 62 L6 44 Z" fill="#222B35" stroke="#FFA62B" stroke-width="3" />
+          <path d="M28.5 13 L35.5 13 L35.5 22.6 L28.5 25.4 Z" fill="#FFA62B" />
+          <path d="M28.5 28.9 L35.5 26.1 L35.5 39 L32 41.7 L28.5 39 Z" fill="#3BE0FF" />
+          <circle cx="14.5" cy="11.5" r="2.5" fill="#FFA62B" />
+          <path d="M19 41 L32 51 L45 41" fill="none" stroke="#E6EBF0" stroke-width="4.5" />
+        </svg>
+        <h1>Download this file?</h1>
       </div>
-    </div>
 
-    <div class="btns">
-      <button id="cancel">Cancel</button>
-      <button id="download" class="primary">Download</button>
+      <label for="filename">Save as</label>
+      <input type="text" id="filename" />
+      <p class="url" id="url"></p>
+
+      <div class="row">
+        <div>
+          <label for="connections">Connections</label>
+          <input type="number" id="connections" min="1" max="32" value="8" />
+        </div>
+      </div>
+
+      <div class="btns">
+        <button id="cancel">Cancel</button>
+        <button id="download" class="primary">Download</button>
+      </div>
     </div>
 
     <script src="confirm.js"></script>

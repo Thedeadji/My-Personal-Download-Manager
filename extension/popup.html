@@ -4,49 +4,137 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MyPersonalDownloadManager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500&family=Chakra+Petch:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
     <style>
-      :root { color-scheme: light dark; }
-      body {
-        font: 13px/1.45 system-ui, sans-serif;
-        width: 260px; margin: 0; padding: 14px;
+      :root {
+        --frame: #1a2129;
+        --panel: #222b35;
+        --well: #0c1116;
+        --bevel: #2e3946;
+        --text: #e6ebf0;
+        --text2: #a9b4c1;
+        --text3: #8b97a5;
+        --amber: #ffa62b;
+        --ink: #1c1203;
+        --cyan: #3be0ff;
+        --green: #6bd66f;
+        --red: #ff6b60;
       }
-      h1 { font-size: 14px; margin: 0 0 4px; }
-      .sub { opacity: 0.65; margin: 0 0 12px; }
-      .row { display: flex; align-items: center; justify-content: space-between; margin: 10px 0; }
-      button { font: inherit; padding: 6px 10px; cursor: pointer; }
-      .status { margin-top: 10px; padding: 8px; border-radius: 6px; background: rgba(127,127,127,.12); }
-      .ok { color: #1a7f37; } .bad { color: #cf222e; }
-      .hint { opacity:.6; font-size:12px; margin-top:10px; }
-      input[type="checkbox"] { width: 16px; height: 16px; }
+      * { box-sizing: border-box; }
+      body {
+        font-family: "Barlow", system-ui, sans-serif;
+        font-size: 13px;
+        line-height: 1.45;
+        width: 290px;
+        margin: 0;
+        padding: 12px;
+        background: var(--frame);
+        color: var(--text);
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--bevel);
+        clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+        padding: 14px;
+      }
+      .head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+      .head svg { width: 26px; height: 26px; flex: none; }
+      h1 {
+        font-family: "Chakra Petch", sans-serif;
+        font-size: 14px; font-weight: 600; letter-spacing: 0.02em;
+        margin: 0;
+      }
+      .sub {
+        font-family: "Chakra Petch", sans-serif;
+        font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+        color: var(--text3); margin: 0 0 12px 36px;
+      }
+      .row {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; padding: 9px 0; border-top: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .row:first-of-type { border-top: 0; }
+      .row label { color: var(--text2); cursor: pointer; }
+
+      /* Industrial toggle (checkbox) */
+      input[type="checkbox"] { appearance: none; margin: 0; cursor: pointer; }
+      input[type="checkbox"] {
+        width: 18px; height: 18px; flex: none;
+        background: var(--well); border: 1px solid var(--bevel);
+      }
+      input[type="checkbox"]:checked { background: var(--amber); border-color: var(--amber); }
+      input[type="checkbox"]:checked::after {
+        content: ""; display: block; width: 5px; height: 9px;
+        margin: 2px auto 0; border: solid var(--ink); border-width: 0 2px 2px 0;
+        transform: rotate(45deg);
+      }
+
+      button {
+        font-family: "Chakra Petch", sans-serif;
+        font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+        width: 100%; padding: 9px 12px; margin-top: 12px; cursor: pointer;
+        background: var(--well); color: var(--text); border: 1px solid var(--bevel);
+        clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+      }
+      button:hover { border-color: var(--amber); color: var(--amber); }
+
+      .status {
+        font-size: 12px; color: var(--text2);
+        margin-top: 12px; padding: 9px 10px;
+        background: var(--well); border-left: 2px solid var(--cyan);
+      }
+      .status .ok { color: var(--green); font-weight: 500; }
+      .status .bad { color: var(--red); font-weight: 500; }
+      .hint {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10.5px; color: var(--text3); margin: 10px 2px 0;
+      }
+      code { font-family: "JetBrains Mono", monospace; color: var(--text2); }
     </style>
   </head>
   <body>
-    <h1>MyPersonalDownloadManager</h1>
-    <p class="sub">Browser integration</p>
+    <div class="card">
+      <div class="head">
+        <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M6 10 L14 2 L58 2 L58 44 L32 62 L6 44 Z" fill="#222B35" stroke="#FFA62B" stroke-width="3" />
+          <path d="M28.5 13 L35.5 13 L35.5 22.6 L28.5 25.4 Z" fill="#FFA62B" />
+          <path d="M28.5 28.9 L35.5 26.1 L35.5 39 L32 41.7 L28.5 39 Z" fill="#3BE0FF" />
+          <circle cx="14.5" cy="11.5" r="2.5" fill="#FFA62B" />
+          <path d="M19 41 L32 51 L45 41" fill="none" stroke="#E6EBF0" stroke-width="4.5" />
+        </svg>
+        <h1>MyPersonalDownloadManager</h1>
+      </div>
+      <p class="sub">Browser integration</p>
 
-    <div class="row">
-      <label for="confirm">Ask before each download</label>
-      <input type="checkbox" id="confirm" />
-    </div>
+      <div class="row">
+        <label for="confirm">Ask before each download</label>
+        <input type="checkbox" id="confirm" />
+      </div>
 
-    <div class="row">
-      <label for="intercept">Capture all browser downloads</label>
-      <input type="checkbox" id="intercept" />
-    </div>
+      <div class="row">
+        <label for="intercept">Capture all browser downloads</label>
+        <input type="checkbox" id="intercept" />
+      </div>
 
-    <div class="row">
-      <label for="videoPanel">Show video download panel on pages</label>
-      <input type="checkbox" id="videoPanel" />
-    </div>
+      <div class="row">
+        <label for="videoPanel">Show video download panel on pages</label>
+        <input type="checkbox" id="videoPanel" />
+      </div>
 
-    <div class="row">
       <button id="ping">Test connection to host</button>
+
+      <div class="status" id="status">
+        Right-click any link, image, or media and choose
+        “Download with MyPersonalDownloadManager”.
+      </div>
+
+      <p class="hint">Host app must be installed (run <code>install_host.py</code>).</p>
     </div>
-
-    <div class="status" id="status">Right-click any link, image, or media and
-      choose “Download with MyPersonalDownloadManager”.</div>
-
-    <p class="hint">The host app must be installed (run <code>install_host.py</code>).</p>
 
     <script src="popup.js"></script>
   </body>
