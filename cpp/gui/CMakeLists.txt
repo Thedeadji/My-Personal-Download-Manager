@@ -7,6 +7,7 @@ set(CMAKE_AUTORCC ON)
 qt_add_executable(mpdm_gui
     main.cpp
     mainwindow.cpp
+    dialogs.cpp
     fonts.qrc
 )
 target_include_directories(mpdm_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

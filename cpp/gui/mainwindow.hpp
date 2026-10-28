@@ -19,6 +19,8 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    void openSettings();
+    void openScheduler();
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -28,6 +30,7 @@ private:
     void applyTheme();
     void refresh();
     void onAdd();
+    void applyAppearance(const QString& mode);  // "system" | "light" | "dark"
 
     // register a widget that has setPalette(const Palette*)
     template <class W>

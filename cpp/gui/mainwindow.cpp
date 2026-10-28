@@ -6,9 +6,12 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QGuiApplication>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QScrollArea>
+#include <QSettings>
+#include <QStyleHints>
 
 #include <cmath>
 #include <map>
@@ -27,9 +30,19 @@ static QString htime(double s) {
     return h ? QString("%1h %2m").arg(h).arg(m) : (m ? QString("%1 min").arg(m) : QString("%1s").arg(t));
 }
 
+const Palette* paletteForMode(const QString& mode) {
+    if (mode == "light") return &kLight;
+    if (mode == "dark") return &kDark;
+    // system
+    return qApp->styleHints()->colorScheme() == Qt::ColorScheme::Light ? &kLight : &kDark;
+}
+
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("MyPersonalDownloadManager");
     resize(1300, 860);
+    QSettings s;
+    pal_ = paletteForMode(s.value("appearance", "dark").toString());
+    manager_.start_scheduler();
     buildUi();
     applyTheme();
     connect(&timer_, &QTimer::timeout, this, &MainWindow::refresh);
@@ -73,6 +86,7 @@ void MainWindow::buildUi() {
     };
     auto surf = [&](Surface::Kind k) { auto* s = themed(new Surface(k)); return s; };
 
+    themed_.clear();  // rebuildable (theme switch re-runs buildUi)
     auto* central = new QWidget;
     central->setAutoFillBackground(true);
     QPalette cpal = central->palette();
@@ -150,8 +164,8 @@ void MainWindow::buildUi() {
     actionBtn("Stop", [this] { if (!selId_.isEmpty()) { manager_.pause(selId_.toStdString()); refresh(); } });
     actionBtn("Remove", [this] { if (!selId_.isEmpty()) { manager_.remove(selId_.toStdString(), false); refresh(); } });
     tb->addWidget(divider());
-    actionBtn("Scheduler", [] {});
-    actionBtn("Settings", [] {});
+    actionBtn("Scheduler", [this] { openScheduler(); });
+    actionBtn("Settings", [this] { openSettings(); });
     tb->addStretch(1);
     auto* searchWell = surf(Surface::Well);
     searchWell->setFixedSize(220, 44);
