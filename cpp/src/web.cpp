@@ -22,21 +22,27 @@ static const char* PAGE = R"PAGE(<!doctype html>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>MPDM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#0b0e13; --surface:#121821; --surface2:#0e141b; --line:#212a35;
-  --text:#e6e8ee; --muted:#8a93a3; --faint:#5b6675;
-  --amber:#f6a01a; --accent:#34cde6; --green:#3fb950; --red:#e5534b; --purple:#a371f7; --sel:#1a1608;
+  --bg:#0C1116; --surface:#222B35; --surface2:#18202A; --line:#3B4756;
+  --text:#E6EBF0; --muted:#A9B4C1; --faint:#8B97A5;
+  --amber:#FFA62B; --accent:#3BE0FF; --green:#6BD66F; --red:#FF6B60; --purple:#A68CFF; --sel:#2a2111;
 }
 :root[data-theme="light"]{
-  --bg:#eef1f5; --surface:#ffffff; --surface2:#f3f5f8; --line:#d6dbe2;
-  --text:#1f2630; --muted:#5b6675; --faint:#8a93a3;
-  --amber:#f6a01a; --accent:#1b8fae; --green:#2e9e44; --red:#d83a31; --purple:#7c53d6; --sel:#fdf0d8;
+  --bg:#EEF2F6; --surface:#FFFFFF; --surface2:#F5F7FA; --line:#E4E9EF;
+  --text:#18202A; --muted:#3E4A57; --faint:#8A95A3;
+  --amber:#FFA62B; --accent:#0B8FAD; --green:#2E9E43; --red:#B3261E; --purple:#7C53D6; --sel:#FFF3DE;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
-  font:13px/1.45 "Segoe UI",Inter,system-ui,sans-serif}
+  font:13px/1.45 "Barlow","Segoe UI",system-ui,sans-serif}
 .mono{font-family:"JetBrains Mono",Consolas,monospace}
+.h,thead th,button.btn,header .mode,.tile .lbl,.ranges span,.statusbar,.qhead b{
+  font-family:"Chakra Petch","Segoe UI",sans-serif;text-transform:uppercase}
+header .name{font-family:"Barlow",sans-serif;font-weight:700}
 .h{font-size:10px;letter-spacing:1.4px;color:var(--faint)}
 .muted{color:var(--muted)} .faint{color:var(--faint)}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:8px}
