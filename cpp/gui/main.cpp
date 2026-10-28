@@ -3,11 +3,17 @@
 #include <QFontDatabase>
 #include <QTimer>
 
+#include <QFile>
+#include <QSettings>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include "mainwindow.hpp"
+#include "popup.hpp"
+
+namespace mpdm::gui { const Palette* paletteForMode(const QString& mode); }
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
@@ -18,6 +24,26 @@ int main(int argc, char** argv) {
                           ":/fonts/fonts/Barlow-Regular.ttf", ":/fonts/fonts/Barlow-Medium.ttf",
                           ":/fonts/fonts/JetBrainsMono.ttf"})
         QFontDatabase::addApplicationFont(f);
+
+    // Per-download popup mode (launched by the native host for browser downloads):
+    //   mpdm_gui --popup <job.json>   [--shot <png>]   (--shot: render then quit)
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--popup") == 0 && i + 1 < argc) {
+            QString jobPath = argv[i + 1];
+            QFile jf(jobPath);
+            std::string job = "{}";
+            if (jf.open(QIODevice::ReadOnly)) job = jf.readAll().toStdString();
+            const auto* pal = mpdm::gui::paletteForMode(QSettings().value("appearance", "dark").toString());
+            auto* pw = new mpdm::gui::PopupWindow(job, pal);
+            pw->show();
+            for (int k = 1; k < argc; ++k)
+                if (std::strcmp(argv[k], "--shot") == 0 && k + 1 < argc) {
+                    QString out = argv[k + 1];
+                    QTimer::singleShot(2500, [pw, out] { pw->grab().save(out); qApp->quit(); });
+                }
+            return app.exec();
+        }
+    }
 
     // Dev: `--export-png <dir>` writes the shield logo at icon sizes, then quits
     // (used to build the app .ico). Must run before creating the main window.

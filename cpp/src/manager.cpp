@@ -588,4 +588,108 @@ void DownloadManager::purge_incognito_incomplete() {
     save();
 }
 
+// ---- browser integration ---------------------------------------------------
+static void item_from_record(DownloadItem& it, const json& j) {
+    it.id = j.value("id", gen_id());
+    it.url = j.value("url", "");
+    it.filename = j.value("filename", "");
+    if (j.contains("dest_path") && !j["dest_path"].is_null())
+        it.dest_path = j["dest_path"].get<std::string>();
+    if (j.contains("size") && !j["size"].is_null()) it.size = j["size"].get<long long>();
+    it.downloaded = j.value("downloaded", 0LL);
+    it.status = j.value("status", std::string(ST_COMPLETED));
+    if (j.contains("connections") && j["connections"].is_number())
+        it.connections = j["connections"].get<int>();
+    it.max_rate_bps = j.value("max_rate_bps", 0LL);
+    if (j.contains("headers") && j["headers"].is_object())
+        it.headers = j["headers"].get<std::map<std::string, std::string>>();
+    it.error = j.value("error", "");
+    it.added_at = j.value("added_at", now_epoch());
+}
+
+void DownloadManager::ingest_history_inbox() {
+    std::string dir = (fs::path(state_dir()) / "history_inbox").string();
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return;
+    bool changed = false;
+    for (const auto& de : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (de.path().extension() != ".json") continue;
+        json j;
+        try {
+            std::ifstream f(de.path(), std::ios::binary);
+            f >> j;
+        } catch (...) {
+            fs::remove(de.path(), ec);
+            continue;
+        }
+        std::string id = j.value("id", "");
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            if (!id.empty() && items_.count(id) == 0) {
+                auto it = std::make_shared<DownloadItem>();
+                item_from_record(*it, j);
+                items_[it->id] = it;
+                order_.push_back(it->id);
+                changed = true;
+            }
+        }
+        fs::remove(de.path(), ec);  // consumed
+    }
+    if (changed) save();
+}
+
+std::vector<DownloadItem> read_active_browser() {
+    std::vector<DownloadItem> out;
+    std::string dir = (fs::path(state_dir()) / "active").string();
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return out;
+    for (const auto& de : fs::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (de.path().extension() != ".json") continue;
+        json j;
+        try {
+            std::ifstream f(de.path(), std::ios::binary);
+            f >> j;
+        } catch (...) {
+            continue;
+        }
+        DownloadItem it;
+        it.id = j.value("id", "");
+        it.url = j.value("url", "");
+        it.filename = j.value("filename", "");
+        if (j.contains("dest_path") && j["dest_path"].is_string()) it.dest_path = j["dest_path"].get<std::string>();
+        bool stream = j.value("stream", false);
+        if (stream) {
+            long long t = j.value("seg_total", 0);
+            if (t > 0) it.size = t;
+            it.downloaded = j.value("seg_done", 0);
+        } else {
+            if (j.contains("total") && !j["total"].is_null()) it.size = j["total"].get<long long>();
+            it.downloaded = j.value("downloaded", 0LL);
+        }
+        it.speed = j.value("speed", 0.0);
+        std::string st = j.value("status", "downloading");
+        it.status = st == "paused" ? ST_PAUSED
+                    : st == "completed" ? ST_COMPLETED
+                    : (st == "failed" || st == "stopped") ? ST_ERROR
+                    : ST_DOWNLOADING;
+        it.error = j.value("error", "");
+        if (j.contains("connections") && j["connections"].is_array())
+            for (const auto& c : j["connections"]) {
+                SegmentProgress sp;
+                sp.index = c.value("index", 0);
+                sp.start = c.value("start", 0LL);
+                sp.end = c.value("end", -1LL);
+                sp.downloaded = c.value("downloaded", 0LL);
+                sp.speed_bps = c.value("speed_bps", 0.0);
+                sp.active = c.value("active", false);
+                sp.stole_from = c.value("stole_from", -1);
+                it.conn_stats.push_back(sp);
+            }
+        out.push_back(std::move(it));
+    }
+    return out;
+}
+
 } // namespace mpdm

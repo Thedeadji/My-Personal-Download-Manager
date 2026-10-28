@@ -26,6 +26,11 @@ inline constexpr const char* ST_ERROR = "error";
 
 std::string state_dir();  // ~/.mypersonaldownloadmanager (created)
 
+struct DownloadItem;
+// Browser downloads currently in progress, read from active/*.json (the popups
+// are the sole writers). Returned as DownloadItem rows for the main app to show.
+std::vector<DownloadItem> read_active_browser();
+
 struct DownloadItem {
     std::string id;
     std::string url;
@@ -104,6 +109,10 @@ public:
     // Incognito lifecycle: clear hard-kill leftovers / purge unfinished on close.
     void sweep_incognito();
     void purge_incognito_incomplete();
+
+    // Browser integration: ingest completed-download records the popup dropped in
+    // history_inbox/ into this manager (so they persist + show), once each.
+    void ingest_history_inbox();
 
     Settings settings;
     int max_concurrent;

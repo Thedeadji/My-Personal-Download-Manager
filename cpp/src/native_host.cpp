@@ -24,6 +24,10 @@
 #include "mpdm/storage.hpp"
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <fcntl.h>
 #include <io.h>
 #endif
@@ -107,9 +111,9 @@ static std::string status_name(Status s) {
     return "";
 }
 
-// ---- job handling (headless) ----------------------------------------------
+// ---- job handling (headless fallback) -------------------------------------
 
-static void run_job(json job) {
+static void run_job_headless(json job) {
     std::string job_id = job.value("id", "");
     if (job_id.empty()) job_id = std::to_string(static_cast<long long>(now_seconds() * 1000));
     std::string url = job.value("url", "");
@@ -146,10 +150,6 @@ static void run_job(json job) {
 
     bool stream_flag = job.value("stream", false);
     double last_emit = 0.0;
-
-    send({{"type", "accepted"},
-          {"id", job_id},
-          {"filename", dest.empty() ? "" : fs::path(dest).filename().string()}});
 
     try {
         std::string path;
@@ -199,6 +199,103 @@ static void run_job(json job) {
     }
 }
 
+// ---- popup launch (Windows) ------------------------------------------------
+//
+// Browser downloads open the Industrial progress popup (mpdm_gui --popup), which
+// is the actual downloader and also records the job so the main app lists it.
+// The host launches the popup and stays alive as its parent until it closes.
+
+#ifdef _WIN32
+
+static std::wstring widen(const std::string& s) {
+    if (s.empty()) return L"";
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), &w[0], n);
+    return w;
+}
+
+// Directory that holds this host exe (the GUI lives alongside it when installed).
+static fs::path host_dir() {
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0 || n == MAX_PATH) return fs::current_path();
+    return fs::path(std::wstring(buf, n)).parent_path();
+}
+
+static fs::path find_gui() {
+    fs::path d = host_dir();
+    for (const char* name : {"MPDM.exe", "mpdm_gui.exe"}) {
+        std::error_code ec;
+        fs::path p = d / name;
+        if (fs::exists(p, ec)) return p;
+    }
+    // Dev tree: ...\cpp\build\Release\mpdm_host.exe -> ...\cpp\build-gui\gui\Release\mpdm_gui.exe
+    return d / "mpdm_gui.exe";
+}
+
+// Launch the popup for `job`, block until it closes. Returns false if it could
+// not be started (caller falls back to a headless download).
+static bool launch_popup_and_wait(const json& job, const std::string& job_id) {
+    fs::path gui = find_gui();
+    std::error_code ec;
+    if (!fs::exists(gui, ec)) {
+        log_line("popup: GUI not found at " + gui.string());
+        return false;
+    }
+    fs::path jobFile = fs::temp_directory_path(ec) / ("mpdm_job_" + job_id + ".json");
+    try {
+        std::ofstream f(jobFile, std::ios::binary | std::ios::trunc);
+        f << job.dump();
+    } catch (...) {
+        return false;
+    }
+
+    std::wstring cmd = L"\"" + gui.wstring() + L"\" --popup \"" + jobFile.wstring() + L"\"";
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE,
+                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    if (!ok) {
+        log_line("popup: CreateProcess failed (" + std::to_string(GetLastError()) + ")");
+        fs::remove(jobFile, ec);
+        return false;
+    }
+    log_line("popup launched: " + gui.string() + " job " + job_id);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    fs::remove(jobFile, ec);
+    return true;
+}
+
+#endif  // _WIN32
+
+static void run_job(json job) {
+    std::string job_id = job.value("id", "");
+    if (job_id.empty()) job_id = std::to_string(static_cast<long long>(now_seconds() * 1000));
+    if (job.value("url", "").empty()) {
+        send({{"type", "error"}, {"id", job_id}, {"message", "no url"}});
+        return;
+    }
+    job["id"] = job_id;
+    send({{"type", "accepted"}, {"id", job_id}, {"filename", job.value("filename", "")}});
+#ifdef _WIN32
+    if (launch_popup_and_wait(job, job_id)) {
+        send({{"type", "done"}, {"id", job_id}});
+        log_line("popup closed " + job_id);
+        return;
+    }
+    // Popup couldn't start -> download headlessly so the request isn't lost.
+    log_line("popup unavailable; headless fallback " + job_id);
+#endif
+    run_job_headless(job);
+}
+
 // ---- serve loop ------------------------------------------------------------
 
 static int serve() {
@@ -229,6 +326,71 @@ static int serve() {
     return 0;
 }
 
+// ---- native-messaging host registration (Windows) --------------------------
+
+#ifdef _WIN32
+static const char* HOST_NAME = "com.mypersonaldownloadmanager.host";
+
+static bool reg_set_default(const std::wstring& subkey, const std::wstring& value) {
+    HKEY h;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, subkey.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &h,
+                        nullptr) != ERROR_SUCCESS)
+        return false;
+    LONG r = RegSetValueExW(h, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                            (DWORD)((value.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(h);
+    return r == ERROR_SUCCESS;
+}
+
+static int do_register(const std::string& ext_id, bool chrome, bool edge) {
+    if (ext_id.empty()) {
+        std::cerr << "error: --register needs --extension-id <ID> (from chrome://extensions)\n";
+        return 2;
+    }
+    fs::path exe = []() {
+        wchar_t b[MAX_PATH]; DWORD n = GetModuleFileNameW(nullptr, b, MAX_PATH);
+        return fs::path(std::wstring(b, n));
+    }();
+    // Manifest in %LOCALAPPDATA%\MPDM so registering needs no admin even when the
+    // exe lives in Program Files; the manifest's "path" points at the exe.
+    const char* lad = std::getenv("LOCALAPPDATA");
+    fs::path manifestDir = lad ? (fs::path(lad) / "MPDM") : exe.parent_path();
+    std::error_code mec; fs::create_directories(manifestDir, mec);
+    fs::path manifest = manifestDir / (std::string(HOST_NAME) + ".json");
+    json m = {{"name", HOST_NAME},
+              {"description", "MyPersonalDownloadManager native host"},
+              {"path", exe.string()},
+              {"type", "stdio"},
+              {"allowed_origins", json::array({std::string("chrome-extension://") + ext_id + "/"})}};
+    try {
+        std::ofstream f(manifest, std::ios::binary | std::ios::trunc);
+        f << m.dump(2);
+    } catch (...) {
+        std::cerr << "error: could not write manifest " << manifest.string() << "\n";
+        return 1;
+    }
+    std::wstring wmanifest = manifest.wstring();
+    std::wstring wname(HOST_NAME, HOST_NAME + std::strlen(HOST_NAME));
+    bool ok = true;
+    if (chrome)
+        ok &= reg_set_default(L"Software\\Google\\Chrome\\NativeMessagingHosts\\" + wname, wmanifest);
+    if (edge)
+        ok &= reg_set_default(L"Software\\Microsoft\\Edge\\NativeMessagingHosts\\" + wname, wmanifest);
+    std::cout << (ok ? "registered native host:\n  " : "registered manifest but a registry write failed:\n  ")
+              << manifest.string() << "\n  extension: " << ext_id << "\n"
+              << (chrome ? "  Chrome: yes\n" : "") << (edge ? "  Edge: yes\n" : "");
+    return ok ? 0 : 1;
+}
+
+static int do_unregister(bool chrome, bool edge) {
+    std::wstring wname(HOST_NAME, HOST_NAME + std::strlen(HOST_NAME));
+    if (chrome) RegDeleteKeyW(HKEY_CURRENT_USER, (L"Software\\Google\\Chrome\\NativeMessagingHosts\\" + wname).c_str());
+    if (edge) RegDeleteKeyW(HKEY_CURRENT_USER, (L"Software\\Microsoft\\Edge\\NativeMessagingHosts\\" + wname).c_str());
+    std::cout << "unregistered native host (" << HOST_NAME << ")\n";
+    return 0;
+}
+#endif  // _WIN32
+
 static int selftest() {
     std::stringstream buf;
     write_frame(buf, json({{"type", "download"}, {"url", "https://example.com/x"},
@@ -252,6 +414,24 @@ static int selftest() {
 int run_native_host(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--selftest") return selftest();
+#ifdef _WIN32
+    {
+        bool reg = false, unreg = false, chrome = false, edge = false;
+        std::string ext_id;
+        for (int i = 1; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a == "--register") reg = true;
+            else if (a == "--unregister") unreg = true;
+            else if (a == "--chrome") chrome = true;
+            else if (a == "--edge") edge = true;
+            else if (a == "--extension-id" && i + 1 < argc) ext_id = argv[++i];
+        }
+        if (reg || unreg) {
+            if (!chrome && !edge) chrome = edge = true;  // default: both
+            return reg ? do_register(ext_id, chrome, edge) : do_unregister(chrome, edge);
+        }
+    }
+#endif
 #ifdef _WIN32
     // Binary stdio so the 4-byte framing isn't mangled by CRLF translation.
     _setmode(_fileno(stdin), _O_BINARY);

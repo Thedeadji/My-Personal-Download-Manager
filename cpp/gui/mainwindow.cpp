@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 
 namespace mpdm::gui {
 
@@ -494,7 +495,18 @@ void MainWindow::onAdd() {
 
 void MainWindow::refresh() {
     const Palette& P = *pal_;
+    // Browser downloads: persist completed ones into the store, and merge the
+    // in-progress ones (written by each popup to active/) into the list.
+    manager_.ingest_history_inbox();
     auto items = manager_.ordered();
+    {
+        std::set<std::string> have;
+        for (auto& it : items) have.insert(it->id);
+        for (auto& a : read_active_browser()) {
+            if (a.id.empty() || have.count(a.id)) continue;
+            items.push_back(std::make_shared<DownloadItem>(std::move(a)));
+        }
+    }
     auto setText = [&](const char* id, const QString& t) { if (auto* l = findChild<QLabel*>(id)) l->setText(t); };
 
     double g = 0; int active = 0; long long dl = 0; int fin = 0;

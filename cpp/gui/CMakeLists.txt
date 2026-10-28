@@ -8,6 +8,7 @@ qt_add_executable(mpdm_gui
     main.cpp
     mainwindow.cpp
     dialogs.cpp
+    popup.cpp
     fonts.qrc
     app.rc        # embeds app.ico as the exe/shortcut/Explorer icon (Windows)
 )
