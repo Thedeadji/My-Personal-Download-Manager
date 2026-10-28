@@ -60,6 +60,10 @@ void apply_env(Settings& s) {
     if (env("MDM_CATEGORIZE", v)) s.categorize = truthy(v);
     if (env("MDM_PROXY", v)) s.proxy = strip(v);
     if (env("MDM_DYNAMIC", v)) s.dynamic_segmentation = truthy(v);
+    if (env("MDM_DUPLICATE", v)) {
+        std::string p = lower(strip(v));
+        if (p == "rename" || p == "overwrite" || p == "skip") s.duplicate_policy = p;
+    }
 }
 
 Settings settings_from_env() {

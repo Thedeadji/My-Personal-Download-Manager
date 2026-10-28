@@ -91,8 +91,31 @@ void MainWindow::openSettings() {
     form2->addRow("Categorize", categorize);
     auto* maxConc = new QSpinBox(); maxConc->setRange(1, 10); maxConc->setValue(manager_.max_concurrent);
     form2->addRow("Max concurrent", maxConc);
+
+    // Connection-type presets (IDM-style): each maps to a connection count; the
+    // spin box stays editable and flips the preset to "Custom" when changed.
+    auto* connType = new QComboBox();
+    connType->addItems({"Fiber / high-speed", "Broadband", "DSL / cable", "Slow / mobile", "Single", "Custom"});
+    const int presetConns[] = {16, 8, 4, 2, 1};
     auto* conns = new QSpinBox(); conns->setRange(1, 32); conns->setValue(S.connections);
+    auto syncPreset = [connType, presetConns](int n) {
+        int idx = 5;  // Custom
+        for (int i = 0; i < 5; ++i) if (presetConns[i] == n) { idx = i; break; }
+        QSignalBlocker b(connType); connType->setCurrentIndex(idx);
+    };
+    syncPreset(S.connections);
+    connect(connType, QOverload<int>::of(&QComboBox::activated), &dlg, [conns, presetConns](int i) {
+        if (i < 5) { QSignalBlocker b(conns); conns->setValue(presetConns[i]); }
+    });
+    connect(conns, QOverload<int>::of(&QSpinBox::valueChanged), &dlg, [syncPreset](int n) { syncPreset(n); });
+    form2->addRow("Connection type", connType);
     form2->addRow("Connections / download", conns);
+
+    auto* dupPolicy = new QComboBox();
+    dupPolicy->addItems({"Rename — save as name(1).ext", "Overwrite existing", "Skip — keep existing file"});
+    const char* dupVals[] = {"rename", "overwrite", "skip"};
+    for (int i = 0; i < 3; ++i) if (S.duplicate_policy == dupVals[i]) dupPolicy->setCurrentIndex(i);
+    form2->addRow("If file exists", dupPolicy);
     auto* defLimit = new QLineEdit(S.max_rate_bps ? QString::fromStdString(format_rate((double)S.max_rate_bps)) : "");
     defLimit->setPlaceholderText("unlimited (e.g. 500k, 1.5m)");
     form2->addRow("Default speed limit", defLimit);
@@ -146,6 +169,7 @@ void MainWindow::openSettings() {
         S.categorize = categorize->isChecked();
         manager_.max_concurrent = maxConc->value();
         S.connections = conns->value();
+        S.duplicate_policy = dupVals[dupPolicy->currentIndex()];
         S.max_rate_bps = rate(defLimit->text());
         S.dynamic_segmentation = dynSeg->isChecked();
         S.user_agent = ua->currentIndex() == 0 ? DEFAULT_USER_AGENT

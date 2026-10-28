@@ -26,6 +26,10 @@ struct Settings {
     bool categorize = true;
     std::map<std::string, std::string> category_dirs;
     bool dynamic_segmentation = true;
+    // What to do when the target file already exists (and no resumable partial
+    // matches): "rename" (save as name(1).ext — default), "overwrite" (replace
+    // it), or "skip" (keep the existing file, don't re-download).
+    std::string duplicate_policy = "rename";
 };
 
 // Map a UA choice to a header string: ""/"default"/"honest" -> honest default;

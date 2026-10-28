@@ -38,7 +38,8 @@ static json settings_to_json(const Settings& s) {
             {"max_rate_bps", s.max_rate_bps},
             {"categorize", s.categorize},
             {"category_dirs", s.category_dirs},
-            {"dynamic_segmentation", s.dynamic_segmentation}};
+            {"dynamic_segmentation", s.dynamic_segmentation},
+            {"duplicate_policy", s.duplicate_policy}};
 }
 
 static void apply_settings_json(Settings& s, const json& j) {
@@ -58,6 +59,7 @@ static void apply_settings_json(Settings& s, const json& j) {
     if (j.contains("category_dirs") && j["category_dirs"].is_object())
         s.category_dirs = j["category_dirs"].get<std::map<std::string, std::string>>();
     s.dynamic_segmentation = j.value("dynamic_segmentation", s.dynamic_segmentation);
+    s.duplicate_policy = j.value("duplicate_policy", s.duplicate_policy);
 }
 
 static json load_prefs() {

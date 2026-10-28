@@ -340,7 +340,38 @@ std::string Download::start() {
         std::error_code ec;
         fs::create_directories(out_dir, ec);
         auto resumable = find_resumable(out_dir, url_, info_->size, info_->etag);
-        dest_path_ = resumable ? *resumable : unique_dest(out_dir, info_->filename);
+        if (resumable) {
+            dest_path_ = *resumable;  // a matching partial always wins (true resume)
+        } else {
+            // Duplicate-file policy: a full file with this name already on disk.
+            std::string candidate =
+                (fs::path(out_dir) / sanitize_filename(info_->filename)).string();
+            const std::string& pol = settings_.duplicate_policy;
+            if (fs::exists(candidate, ec) && pol == "skip") {
+                // Keep the existing file; report it complete without re-downloading.
+                dest_path_ = candidate;
+                long long fsz = static_cast<long long>(fs::file_size(candidate, ec));
+                if (!info_->size) info_->size = fsz;
+                Segment seg;
+                seg.index = 0;
+                seg.start = 0;
+                seg.end = (info_->size ? *info_->size : fsz) - 1;
+                seg.downloaded = seg.size();
+                {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    segments_ = {seg};
+                }
+                downloaded_at_start_ = seg.downloaded;
+                status_ = Status::Completed;
+                emit_progress(true);
+                clear_record(dest_path_);
+                return dest_path_;
+            } else if (fs::exists(candidate, ec) && pol == "overwrite") {
+                dest_path_ = candidate;  // preallocate() truncates it below
+            } else {
+                dest_path_ = unique_dest(out_dir, info_->filename);  // "rename" (default)
+            }
+        }
     }
 
     bool resumed = false;
