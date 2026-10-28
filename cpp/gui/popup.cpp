@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -67,7 +68,7 @@ PopupWindow::PopupWindow(const std::string& jobJson, const Palette* pal, QWidget
         for (auto it = job["headers"].begin(); it != job["headers"].end(); ++it)
             if (it.value().is_string()) headers_[it.key()] = it.value().get<std::string>();
 
-    settings_ = settings_from_env();
+    settings_ = load_user_settings();   // same output folder/categories/limits as the app
     if (connections_ > 0) settings_.connections = std::max(1, connections_);
     if (!outputDir_.empty()) settings_.output_dir = outputDir_;
 

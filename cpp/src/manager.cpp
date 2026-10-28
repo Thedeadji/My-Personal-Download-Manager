@@ -76,6 +76,14 @@ static json load_prefs() {
     }
 }
 
+Settings load_user_settings() {
+    Settings s;  // defaults
+    json prefs = load_prefs();
+    if (prefs.contains("settings")) apply_settings_json(s, prefs["settings"]);
+    apply_env(s);  // env wins (mirrors the manager ctor precedence)
+    return s;
+}
+
 static double now_epoch() {
     using namespace std::chrono;
     return duration<double>(system_clock::now().time_since_epoch()).count();

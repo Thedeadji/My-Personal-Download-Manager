@@ -26,6 +26,11 @@ inline constexpr const char* ST_ERROR = "error";
 
 std::string state_dir();  // ~/.mypersonaldownloadmanager (created)
 
+// Load the user's effective Settings: defaults -> settings.json -> environment.
+// Used by standalone processes (the download popup) so they honor the same
+// output folder / categories / limits the main app saved.
+Settings load_user_settings();
+
 struct DownloadItem;
 // Browser downloads currently in progress, read from active/*.json (the popups
 // are the sole writers). Returned as DownloadItem rows for the main app to show.
