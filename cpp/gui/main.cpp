@@ -19,6 +19,17 @@ int main(int argc, char** argv) {
                           ":/fonts/fonts/JetBrainsMono.ttf"})
         QFontDatabase::addApplicationFont(f);
 
+    // Dev: `--export-png <dir>` writes the shield logo at icon sizes, then quits
+    // (used to build the app .ico). Must run before creating the main window.
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--export-png") == 0 && i + 1 < argc) {
+            QString dir = argv[i + 1];
+            for (int s : {16, 24, 32, 48, 64, 128, 256})
+                mpdm::gui::Logo::pixmap(s).save(QString("%1/shield_%2.png").arg(dir).arg(s), "PNG");
+            return 0;
+        }
+    }
+
     mpdm::gui::MainWindow w;
     // Dev: MPDM_WIN_SIZE=1280x720 forces a window size (resolution testing).
     if (const char* ws = std::getenv("MPDM_WIN_SIZE")) {

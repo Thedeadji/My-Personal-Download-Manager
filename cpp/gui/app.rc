@@ -1,0 +1,4 @@
+// Windows resource: embeds the application icon into mpdm_gui.exe so the
+// executable, desktop/Start-menu shortcuts, and Explorer show the shield.
+// ID 1 (lowest) is what the shell uses as the file's icon.
+1 ICON "app.ico"

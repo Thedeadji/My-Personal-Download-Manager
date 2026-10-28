@@ -49,11 +49,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowIcon(Logo::icon());
 
     // Resolution-friendly sizing: the full layout targets ~1300x860, but it must
-    // also fit smaller screens (1366x768 / 1280x720 laptops) without clipping.
-    // Open clamped to the available screen area and centered; a small minimum
-    // size plus the scroll-wrapped body (see buildUi) keep it usable anywhere
-    // from compact laptops up to 1920x1080.
-    setMinimumSize(900, 560);
+    // also fit small screens without clipping. Open clamped to the available
+    // screen area and centered; a low minimum size plus the scroll-wrapped body
+    // (see buildUi) keep it usable from 800x600 up to 1920x1080 — below the
+    // layout's natural size the content scrolls instead of being cut off.
+    setMinimumSize(720, 500);
     if (auto* scr = QGuiApplication::primaryScreen()) {
         const QRect av = scr->availableGeometry();
         int w = std::min(1300, (int)(av.width() * 0.96));

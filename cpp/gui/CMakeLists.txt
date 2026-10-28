@@ -9,6 +9,7 @@ qt_add_executable(mpdm_gui
     mainwindow.cpp
     dialogs.cpp
     fonts.qrc
+    app.rc        # embeds app.ico as the exe/shortcut/Explorer icon (Windows)
 )
 target_include_directories(mpdm_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mpdm_gui PRIVATE mpdm_core Qt6::Widgets)
