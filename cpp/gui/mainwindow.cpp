@@ -11,11 +11,13 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QScreen>
 #include <QScrollArea>
 #include <QSettings>
 #include <QStyleHints>
 #include <QSystemTrayIcon>
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 
@@ -42,10 +44,25 @@ const Palette* paletteForMode(const QString& mode) {
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("MyPersonalDownloadManager");
-    resize(1300, 860);
     QSettings s;
     pal_ = paletteForMode(s.value("appearance", "dark").toString());
     setWindowIcon(Logo::icon());
+
+    // Resolution-friendly sizing: the full layout targets ~1300x860, but it must
+    // also fit smaller screens (1366x768 / 1280x720 laptops) without clipping.
+    // Open clamped to the available screen area and centered; a small minimum
+    // size plus the scroll-wrapped body (see buildUi) keep it usable anywhere
+    // from compact laptops up to 1920x1080.
+    setMinimumSize(900, 560);
+    if (auto* scr = QGuiApplication::primaryScreen()) {
+        const QRect av = scr->availableGeometry();
+        int w = std::min(1300, (int)(av.width() * 0.96));
+        int h = std::min(860, (int)(av.height() * 0.96));
+        resize(w, h);
+        move(av.center() - QPoint(w / 2, h / 2));
+    } else {
+        resize(1300, 860);
+    }
     manager_.start_scheduler();
     buildUi();
     applyTheme();
@@ -151,7 +168,18 @@ void MainWindow::buildUi() {
     QPalette cpal = central->palette();
     cpal.setColor(QPalette::Window, P.frame);
     central->setPalette(cpal);
-    setCentralWidget(central);
+    // Scroll-wrap the whole body: at roomy resolutions the viewport is larger
+    // than the content so no scrollbars show and the center column expands to
+    // fill (up to 1920); at small resolutions the content keeps its minimum and
+    // the user scrolls instead of having panels clipped.
+    auto* bodyScroll = new QScrollArea;
+    bodyScroll->setWidgetResizable(true);
+    bodyScroll->setFrameShape(QFrame::NoFrame);
+    bodyScroll->setWidget(central);
+    bodyScroll->setStyleSheet("QScrollArea{border:0;background:" + P.frame.name(QColor::HexArgb) + "}");
+    bodyScroll->viewport()->setAutoFillBackground(true);
+    { QPalette vp = bodyScroll->viewport()->palette(); vp.setColor(QPalette::Window, P.frame); bodyScroll->viewport()->setPalette(vp); }
+    setCentralWidget(bodyScroll);
     auto* root = new QVBoxLayout(central);
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(6);

@@ -3,6 +3,8 @@
 #include <QFontDatabase>
 #include <QTimer>
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "mainwindow.hpp"
@@ -18,6 +20,11 @@ int main(int argc, char** argv) {
         QFontDatabase::addApplicationFont(f);
 
     mpdm::gui::MainWindow w;
+    // Dev: MPDM_WIN_SIZE=1280x720 forces a window size (resolution testing).
+    if (const char* ws = std::getenv("MPDM_WIN_SIZE")) {
+        int ww = 0, hh = 0;
+        if (std::sscanf(ws, "%dx%d", &ww, &hh) == 2 && ww > 0 && hh > 0) w.resize(ww, hh);
+    }
     w.show();
 
     // Dev: `--shot <path>` renders the window; `--shot-settings`/`--shot-scheduler`
