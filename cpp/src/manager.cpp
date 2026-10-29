@@ -13,6 +13,8 @@
 
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
+#include "mpdm/grabber.hpp"
+#include "mpdm/http_client.hpp"
 #include "mpdm/storage.hpp"
 
 namespace fs = std::filesystem;
@@ -180,6 +182,7 @@ static json item_to_json(const DownloadItem& it) {
     j["connections"] = it.connections ? json(it.connections) : json(nullptr);
     j["max_rate_bps"] = it.max_rate_bps;
     j["incognito"] = it.incognito;
+    j["stream"] = it.stream;
     j["headers"] = it.headers;
     j["error"] = it.error;
     j["added_at"] = it.added_at;
@@ -225,6 +228,7 @@ void DownloadManager::load() {
                 it->connections = j["connections"].get<int>();
             it->max_rate_bps = j.value("max_rate_bps", 0LL);
             it->incognito = j.value("incognito", false);
+            it->stream = j.value("stream", false);
             if (j.contains("headers")) it->headers = j["headers"].get<std::map<std::string, std::string>>();
             it->error = j.value("error", "");
             it->added_at = j.value("added_at", now_epoch());
@@ -256,10 +260,17 @@ int DownloadManager::active_count() {
 }
 
 // ---- mutations ------------------------------------------------------------
+static bool url_is_stream(const std::string& url) {
+    std::string low = url;
+    for (auto& c : low) c = (char)::tolower((unsigned char)c);
+    return low.find(".m3u8") != std::string::npos || low.find(".mpd") != std::string::npos;
+}
+
 std::shared_ptr<DownloadItem> DownloadManager::add(const std::string& url, const std::string& filename,
                                                    int connections,
                                                    std::map<std::string, std::string> headers,
-                                                   bool start, long long max_rate_bps, bool incognito) {
+                                                   bool start, long long max_rate_bps, bool incognito,
+                                                   bool stream) {
     auto it = std::make_shared<DownloadItem>();
     it->id = gen_id();
     it->url = url;
@@ -271,6 +282,7 @@ std::shared_ptr<DownloadItem> DownloadManager::add(const std::string& url, const
     it->connections = connections;
     it->max_rate_bps = max_rate_bps > 0 ? max_rate_bps : 0;
     it->incognito = incognito;
+    it->stream = stream || url_is_stream(it->url);
     it->headers = std::move(headers);
     it->status = start ? ST_QUEUED : ST_PAUSED;
     it->added_at = now_epoch();
@@ -322,6 +334,40 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
         s.categorize = false;
     }
 
+    // Stream (HLS/DASH) items run through the grabber -> MP4. grab() has no
+    // pause/cancel, so these run to completion (the UI disables pause for them).
+    if (item->stream) {
+        std::string out = item->dest_path;
+        if (out.empty()) {
+            std::string fname = item->filename.empty() ? "video.mp4" : sanitize_filename(item->filename);
+            std::string low = fname;
+            for (auto& c : low) c = (char)::tolower((unsigned char)c);
+            if (low.size() < 4 || (low.rfind(".mp4") != low.size() - 4 && low.rfind(".mkv") != low.size() - 4 &&
+                                   low.rfind(".webm") != low.size() - 5))
+                fname += ".mp4";
+            std::string dir = categorized_dir(s.output_dir, fname, s.categorize, s.category_dirs);
+            std::error_code ec; fs::create_directories(dir, ec);
+            out = unique_dest(dir, fname);
+        }
+        item->dest_path = out;
+        item->filename = fs::path(out).filename().string();
+        GrabProgressCb gcb = [item](int done, int total) {
+            item->seg_done = done; item->seg_total = total;
+            item->downloaded = done; if (total) item->size = total;
+        };
+        try {
+            std::string path = grab(item->url, out, s, "auto", "best", gcb);
+            item->dest_path = path;
+            item->status = ST_COMPLETED;
+            item->speed = 0; item->eta = 0;
+        } catch (const std::exception& e) {
+            item->status = ST_ERROR; item->error = e.what(); item->speed = 0;
+        }
+        item->dl = nullptr;
+        save(); pump(); maybe_on_complete();
+        return;
+    }
+
     auto cb = [item](const Progress& p) {
         item->downloaded = p.downloaded;
         if (p.total) item->size = *p.total;
@@ -335,8 +381,15 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
         }
     };
 
-    auto dl = std::make_shared<Download>(item->url, s, item->dest_path, cb, item->headers,
-                                         &global_limiter_);
+    // Honor a caller-supplied filename (e.g. from the browser) when no dest yet.
+    std::string dest = item->dest_path;
+    if (dest.empty() && !item->filename.empty()) {
+        std::string fn = sanitize_filename(item->filename);
+        std::string dir = categorized_dir(s.output_dir, fn, s.categorize, s.category_dirs);
+        std::error_code ec; fs::create_directories(dir, ec);
+        dest = unique_dest(dir, fn);
+    }
+    auto dl = std::make_shared<Download>(item->url, s, dest, cb, item->headers, &global_limiter_);
     item->dl = dl;
     try {
         std::string path = dl->start();
@@ -597,29 +650,13 @@ void DownloadManager::purge_incognito_incomplete() {
 }
 
 // ---- browser integration ---------------------------------------------------
-static void item_from_record(DownloadItem& it, const json& j) {
-    it.id = j.value("id", gen_id());
-    it.url = j.value("url", "");
-    it.filename = j.value("filename", "");
-    if (j.contains("dest_path") && !j["dest_path"].is_null())
-        it.dest_path = j["dest_path"].get<std::string>();
-    if (j.contains("size") && !j["size"].is_null()) it.size = j["size"].get<long long>();
-    it.downloaded = j.value("downloaded", 0LL);
-    it.status = j.value("status", std::string(ST_COMPLETED));
-    if (j.contains("connections") && j["connections"].is_number())
-        it.connections = j["connections"].get<int>();
-    it.max_rate_bps = j.value("max_rate_bps", 0LL);
-    if (j.contains("headers") && j["headers"].is_object())
-        it.headers = j["headers"].get<std::map<std::string, std::string>>();
-    it.error = j.value("error", "");
-    it.added_at = j.value("added_at", now_epoch());
-}
-
-void DownloadManager::ingest_history_inbox() {
-    std::string dir = (fs::path(state_dir()) / "history_inbox").string();
+// The native host drops a browser download request as jobs/<id>.json; the app
+// adopts each into the queue so it downloads in-app and shows in the list.
+std::vector<std::string> DownloadManager::ingest_jobs() {
+    std::vector<std::string> ids;
+    std::string dir = (fs::path(state_dir()) / "jobs").string();
     std::error_code ec;
-    if (!fs::is_directory(dir, ec)) return;
-    bool changed = false;
+    if (!fs::is_directory(dir, ec)) return ids;
     for (const auto& de : fs::directory_iterator(dir, ec)) {
         if (ec) break;
         if (de.path().extension() != ".json") continue;
@@ -631,73 +668,22 @@ void DownloadManager::ingest_history_inbox() {
             fs::remove(de.path(), ec);
             continue;
         }
-        std::string id = j.value("id", "");
-        {
-            std::lock_guard<std::recursive_mutex> lk(mu_);
-            if (!id.empty() && items_.count(id) == 0) {
-                auto it = std::make_shared<DownloadItem>();
-                item_from_record(*it, j);
-                items_[it->id] = it;
-                order_.push_back(it->id);
-                changed = true;
-            }
-        }
-        fs::remove(de.path(), ec);  // consumed
-    }
-    if (changed) save();
-}
-
-std::vector<DownloadItem> read_active_browser() {
-    std::vector<DownloadItem> out;
-    std::string dir = (fs::path(state_dir()) / "active").string();
-    std::error_code ec;
-    if (!fs::is_directory(dir, ec)) return out;
-    for (const auto& de : fs::directory_iterator(dir, ec)) {
-        if (ec) break;
-        if (de.path().extension() != ".json") continue;
-        json j;
-        try {
-            std::ifstream f(de.path(), std::ios::binary);
-            f >> j;
-        } catch (...) {
-            continue;
-        }
-        DownloadItem it;
-        it.id = j.value("id", "");
-        it.url = j.value("url", "");
-        it.filename = j.value("filename", "");
-        if (j.contains("dest_path") && j["dest_path"].is_string()) it.dest_path = j["dest_path"].get<std::string>();
+        fs::remove(de.path(), ec);  // consume before adding (don't re-ingest)
+        std::string url = j.value("url", "");
+        if (url.empty()) continue;
+        std::string filename = j.value("filename", "");
+        int conns = 0;
+        if (j.contains("connections") && j["connections"].is_number()) conns = j["connections"].get<int>();
+        std::map<std::string, std::string> headers;
+        if (j.contains("headers") && j["headers"].is_object())
+            for (auto it = j["headers"].begin(); it != j["headers"].end(); ++it)
+                if (it.value().is_string()) headers[it.key()] = it.value().get<std::string>();
         bool stream = j.value("stream", false);
-        if (stream) {
-            long long t = j.value("seg_total", 0);
-            if (t > 0) it.size = t;
-            it.downloaded = j.value("seg_done", 0);
-        } else {
-            if (j.contains("total") && !j["total"].is_null()) it.size = j["total"].get<long long>();
-            it.downloaded = j.value("downloaded", 0LL);
-        }
-        it.speed = j.value("speed", 0.0);
-        std::string st = j.value("status", "downloading");
-        it.status = st == "paused" ? ST_PAUSED
-                    : st == "completed" ? ST_COMPLETED
-                    : (st == "failed" || st == "stopped") ? ST_ERROR
-                    : ST_DOWNLOADING;
-        it.error = j.value("error", "");
-        if (j.contains("connections") && j["connections"].is_array())
-            for (const auto& c : j["connections"]) {
-                SegmentProgress sp;
-                sp.index = c.value("index", 0);
-                sp.start = c.value("start", 0LL);
-                sp.end = c.value("end", -1LL);
-                sp.downloaded = c.value("downloaded", 0LL);
-                sp.speed_bps = c.value("speed_bps", 0.0);
-                sp.active = c.value("active", false);
-                sp.stole_from = c.value("stole_from", -1);
-                it.conn_stats.push_back(sp);
-            }
-        out.push_back(std::move(it));
+        bool incognito = j.value("incognito", false);
+        auto item = add(url, filename, conns, std::move(headers), /*start=*/true, /*rate=*/0, incognito, stream);
+        if (item) ids.push_back(item->id);
     }
-    return out;
+    return ids;
 }
 
 } // namespace mpdm

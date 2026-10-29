@@ -1,19 +1,15 @@
 // MPDM desktop GUI entry point.
 #include <QApplication>
 #include <QFontDatabase>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QTimer>
-
-#include <QFile>
-#include <QSettings>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include "mainwindow.hpp"
-#include "popup.hpp"
-
-namespace mpdm::gui { const Palette* paletteForMode(const QString& mode); }
 
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
@@ -24,26 +20,6 @@ int main(int argc, char** argv) {
                           ":/fonts/fonts/Barlow-Regular.ttf", ":/fonts/fonts/Barlow-Medium.ttf",
                           ":/fonts/fonts/JetBrainsMono.ttf"})
         QFontDatabase::addApplicationFont(f);
-
-    // Per-download popup mode (launched by the native host for browser downloads):
-    //   mpdm_gui --popup <job.json>   [--shot <png>]   (--shot: render then quit)
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--popup") == 0 && i + 1 < argc) {
-            QString jobPath = argv[i + 1];
-            QFile jf(jobPath);
-            std::string job = "{}";
-            if (jf.open(QIODevice::ReadOnly)) job = jf.readAll().toStdString();
-            const auto* pal = mpdm::gui::paletteForMode(QSettings().value("appearance", "dark").toString());
-            auto* pw = new mpdm::gui::PopupWindow(job, pal);
-            pw->show();
-            for (int k = 1; k < argc; ++k)
-                if (std::strcmp(argv[k], "--shot") == 0 && k + 1 < argc) {
-                    QString out = argv[k + 1];
-                    QTimer::singleShot(2500, [pw, out] { pw->grab().save(out); qApp->quit(); });
-                }
-            return app.exec();
-        }
-    }
 
     // Dev: `--export-png <dir>` writes the shield logo at icon sizes, then quits
     // (used to build the app .ico). Must run before creating the main window.
@@ -56,18 +32,40 @@ int main(int argc, char** argv) {
         }
     }
 
+    bool background = false, isShot = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!std::strcmp(argv[i], "--background")) background = true;
+        if (!std::strncmp(argv[i], "--shot", 6)) isShot = true;
+    }
+
+    // Single instance: the native host launches the app for each browser download;
+    // if one is already running it adopts the dropped job (jobs/) itself, so a
+    // second launch just exits. (Screenshot/dev runs skip this.)
+    const QString sockName = "mpdm_gui_singleton";
+    if (!isShot) {
+        QLocalSocket probe;
+        probe.connectToServer(sockName);
+        if (probe.waitForConnected(200)) { probe.disconnectFromServer(); return 0; }
+        QLocalServer::removeServer(sockName);
+        auto* server = new QLocalServer(&app);
+        server->listen(sockName);  // held for the app's lifetime
+    }
+
     mpdm::gui::MainWindow w;
     // Dev: MPDM_WIN_SIZE=1280x720 forces a window size (resolution testing).
     if (const char* ws = std::getenv("MPDM_WIN_SIZE")) {
         int ww = 0, hh = 0;
         if (std::sscanf(ws, "%dx%d", &ww, &hh) == 2 && ww > 0 && hh > 0) w.resize(ww, hh);
     }
-    w.show();
+    if (!background) w.show();  // --background: stay in the tray; jobs open popups
 
     // Dev: `--shot <path>` renders the window; `--shot-settings`/`--shot-scheduler`
-    // open the dialog and render it. Then quit.
+    // open the dialog and render it; `--shot-popup[-stream] <png>` renders a popup.
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--shot") == 0 && i + 1 < argc) {
+        if ((std::strcmp(argv[i], "--shot-popup") == 0 || std::strcmp(argv[i], "--shot-popup-stream") == 0) &&
+            i + 1 < argc) {
+            w.devShotPopup(argv[i + 1], std::strcmp(argv[i], "--shot-popup-stream") == 0);
+        } else if (std::strcmp(argv[i], "--shot") == 0 && i + 1 < argc) {
             QString out = argv[i + 1];
             QTimer::singleShot(900, [&w, out] { w.grab().save(out); qApp->quit(); });
         } else if ((std::strcmp(argv[i], "--shot-settings") == 0 ||

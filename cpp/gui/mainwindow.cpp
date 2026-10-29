@@ -18,9 +18,11 @@
 #include <QSystemTrayIcon>
 
 #include <algorithm>
+#include <algorithm>
 #include <cmath>
 #include <map>
-#include <set>
+
+#include "popup.hpp"
 
 namespace mpdm::gui {
 
@@ -70,7 +72,63 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setupTray();
     connect(&timer_, &QTimer::timeout, this, &MainWindow::refresh);
     timer_.start(1000);
+    connect(&jobTimer_, &QTimer::timeout, this, &MainWindow::pollJobs);
+    jobTimer_.start(500);
     refresh();
+    pollJobs();  // adopt anything already waiting (e.g. we were launched for it)
+}
+
+void MainWindow::pollJobs() {
+    for (const auto& id : manager_.ingest_jobs()) {
+        bool stream = false;
+        for (auto& it : manager_.ordered())
+            if (it->id == id) { stream = it->stream; break; }
+        openPopupFor(id, stream);
+    }
+}
+
+void MainWindow::devShotPopup(const QString& out, bool stream) {
+    // Create a synthetic, non-running queue item with representative progress and
+    // open a bound popup for it, then grab it to PNG. Dev/verification only.
+    jobTimer_.stop(); timer_.stop();
+    auto it = manager_.add(stream ? "https://media.campus-lectures.example/lecture-07/x.m3u8"
+                                  : "https://releases.ubuntu.com/24.04.1/ubuntu-24.04.1-desktop-amd64.iso",
+                           stream ? "lecture-07-distributed-systems.mp4" : "ubuntu-24.04.1-desktop-amd64.iso",
+                           0, {}, /*start=*/false, 0, false, stream);
+    it->status = ST_DOWNLOADING;
+    if (stream) { it->seg_done = 412; it->seg_total = 980; it->size = 980; it->downloaded = 412; }
+    else {
+        it->size = 6228000000LL; it->downloaded = 4000000000LL; it->speed = 9800000; it->eta = 240;
+        it->dest_path = "D:/Downloads/Programs/ubuntu-24.04.1-desktop-amd64.iso";
+        SegmentProgress a; a.index = 0; a.start = 0; a.end = 100; a.downloaded = 95; a.speed_bps = 1300000; a.active = true; a.stole_from = -1;
+        SegmentProgress b; b.index = 7; b.start = 700; b.end = 760; b.downloaded = 30; b.speed_bps = 1100000; b.active = true; b.stole_from = 7;
+        it->conn_stats = {a, b};
+    }
+    openPopupFor(it->id, stream);
+    auto* pw = popups_.back();
+    QTimer::singleShot(600, pw, [pw] { pw->repaint(); });
+    QTimer::singleShot(900, [pw, out] { pw->grab().save(out); qApp->quit(); });
+}
+
+void MainWindow::openPopupFor(const std::string& id, bool stream) {
+    // don't open a second popup for the same item
+    popups_.erase(std::remove(popups_.begin(), popups_.end(), nullptr), popups_.end());
+    for (auto* p : popups_) if (p && p->itemId() == id) { p->show(); p->raise(); return; }
+    auto* pw = new PopupWindow(&manager_, id, stream, pal_);
+    pw->setAttribute(Qt::WA_DeleteOnClose, true);
+    connect(pw, &QObject::destroyed, this, [this, pw] {
+        popups_.erase(std::remove(popups_.begin(), popups_.end(), pw), popups_.end());
+    });
+    popups_.push_back(pw);
+    // center-ish on screen
+    if (auto* scr = QGuiApplication::primaryScreen()) {
+        QRect a = scr->availableGeometry();
+        int off = (int)popups_.size() * 24;
+        pw->move(a.center() - QPoint(pw->width() / 2 - off, pw->height() / 2 - off));
+    }
+    pw->show();
+    pw->raise();
+    pw->activateWindow();
 }
 
 void MainWindow::setupTray() {
@@ -495,18 +553,7 @@ void MainWindow::onAdd() {
 
 void MainWindow::refresh() {
     const Palette& P = *pal_;
-    // Browser downloads: persist completed ones into the store, and merge the
-    // in-progress ones (written by each popup to active/) into the list.
-    manager_.ingest_history_inbox();
     auto items = manager_.ordered();
-    {
-        std::set<std::string> have;
-        for (auto& it : items) have.insert(it->id);
-        for (auto& a : read_active_browser()) {
-            if (a.id.empty() || have.count(a.id)) continue;
-            items.push_back(std::make_shared<DownloadItem>(std::move(a)));
-        }
-    }
     auto setText = [&](const char* id, const QString& t) { if (auto* l = findChild<QLabel*>(id)) l->setText(t); };
 
     double g = 0; int active = 0; long long dl = 0; int fin = 0;

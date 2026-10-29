@@ -18,12 +18,16 @@ class QCloseEvent;
 
 namespace mpdm::gui {
 
+class PopupWindow;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     void openSettings();
     void openScheduler();
+    void openPopupFor(const std::string& id, bool stream);  // live popup for a queue item
+    void devShotPopup(const QString& out, bool stream);      // dev: render a popup to PNG
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -38,6 +42,7 @@ private:
     void setupTray();
     void showFromTray();
     void quitApp();  // real exit (from tray menu)
+    void pollJobs();  // adopt browser jobs the native host dropped, open popups
 
     // register a widget that has setPalette(const Palette*)
     template <class W>
@@ -61,6 +66,8 @@ private:
 
     QString selId_;
     QTimer timer_;
+    QTimer jobTimer_;
+    std::vector<PopupWindow*> popups_;
 
     QSystemTrayIcon* tray_ = nullptr;
     bool allowQuit_ = false;        // set true only when quitting for real

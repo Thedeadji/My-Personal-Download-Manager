@@ -27,14 +27,7 @@ inline constexpr const char* ST_ERROR = "error";
 std::string state_dir();  // ~/.mypersonaldownloadmanager (created)
 
 // Load the user's effective Settings: defaults -> settings.json -> environment.
-// Used by standalone processes (the download popup) so they honor the same
-// output folder / categories / limits the main app saved.
 Settings load_user_settings();
-
-struct DownloadItem;
-// Browser downloads currently in progress, read from active/*.json (the popups
-// are the sole writers). Returned as DownloadItem rows for the main app to show.
-std::vector<DownloadItem> read_active_browser();
 
 struct DownloadItem {
     std::string id;
@@ -54,6 +47,9 @@ struct DownloadItem {
     double added_at = 0.0;
     std::vector<SegmentProgress> conn_stats;  // per-connection telemetry, runtime only
 
+    bool stream = false;          // HLS/DASH grab (muxed to MP4) rather than a plain file
+    int seg_done = 0, seg_total = 0;  // stream segment progress (runtime)
+
     std::shared_ptr<Download> dl;  // runtime only (not persisted)
 
     std::string category() const;
@@ -70,7 +66,7 @@ public:
                                       int connections = 0,
                                       std::map<std::string, std::string> headers = {},
                                       bool start = true, long long max_rate_bps = 0,
-                                      bool incognito = false);
+                                      bool incognito = false, bool stream = false);
     std::vector<std::shared_ptr<DownloadItem>> add_batch(const std::string& text,
                                                          int connections = 0, bool start = true,
                                                          long long max_rate_bps = 0,
@@ -115,9 +111,9 @@ public:
     void sweep_incognito();
     void purge_incognito_incomplete();
 
-    // Browser integration: ingest completed-download records the popup dropped in
-    // history_inbox/ into this manager (so they persist + show), once each.
-    void ingest_history_inbox();
+    // Browser integration: adopt jobs the native host dropped in jobs/ (each a
+    // browser download request) into the queue. Returns the new item ids.
+    std::vector<std::string> ingest_jobs();
 
     Settings settings;
     int max_concurrent;

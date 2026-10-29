@@ -199,11 +199,12 @@ static void run_job_headless(json job) {
     }
 }
 
-// ---- popup launch (Windows) ------------------------------------------------
+// ---- hand off to the app (Windows) -----------------------------------------
 //
-// Browser downloads open the Industrial progress popup (mpdm_gui --popup), which
-// is the actual downloader and also records the job so the main app lists it.
-// The host launches the popup and stays alive as its parent until it closes.
+// Browser downloads are handed to the main app: the host drops the job in jobs/
+// and launches the GUI (single-instance, so a running copy adopts it). The app
+// owns the download (shows it in the queue and opens the Industrial popup), so
+// the host returns immediately.
 
 #ifdef _WIN32
 
@@ -234,43 +235,38 @@ static fs::path find_gui() {
     return d / "mpdm_gui.exe";
 }
 
-// Launch the popup for `job`, block until it closes. Returns false if it could
-// not be started (caller falls back to a headless download).
-static bool launch_popup_and_wait(const json& job, const std::string& job_id) {
+// Drop the job for the app to adopt, then launch the GUI (single-instance) so a
+// running copy picks it up or a new one starts. Returns false if the GUI exe is
+// missing (caller falls back to a headless download).
+static bool hand_off_to_app(const json& job, const std::string& job_id) {
     fs::path gui = find_gui();
     std::error_code ec;
     if (!fs::exists(gui, ec)) {
-        log_line("popup: GUI not found at " + gui.string());
+        log_line("handoff: GUI not found at " + gui.string());
         return false;
     }
-    fs::path jobFile = fs::temp_directory_path(ec) / ("mpdm_job_" + job_id + ".json");
+    fs::path jobsDir = fs::path(state_dir()) / "jobs";
+    fs::create_directories(jobsDir, ec);
+    fs::path jobFile = jobsDir / (job_id + ".json");
     try {
-        std::ofstream f(jobFile, std::ios::binary | std::ios::trunc);
-        f << job.dump();
+        fs::path tmp = jobFile; tmp += ".tmp";
+        { std::ofstream f(tmp, std::ios::binary | std::ios::trunc); f << job.dump(); }
+        fs::rename(tmp, jobFile, ec);
     } catch (...) {
         return false;
     }
 
-    std::wstring cmd = L"\"" + gui.wstring() + L"\" --popup \"" + jobFile.wstring() + L"\"";
+    std::wstring cmd = L"\"" + gui.wstring() + L"\" --background";
     std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
     cmdBuf.push_back(L'\0');
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
+    STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE,
-                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
-    if (!ok) {
-        log_line("popup: CreateProcess failed (" + std::to_string(GetLastError()) + ")");
-        fs::remove(jobFile, ec);
-        return false;
-    }
-    log_line("popup launched: " + gui.string() + " job " + job_id);
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    fs::remove(jobFile, ec);
-    return true;
+    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                             nullptr, nullptr, &si, &pi);
+    if (ok) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+    else log_line("handoff: CreateProcess failed (" + std::to_string(GetLastError()) + ")");
+    log_line("handoff job " + job_id + " -> " + gui.string());
+    return true;  // job file written; a running instance will adopt it regardless
 }
 
 #endif  // _WIN32
@@ -285,13 +281,12 @@ static void run_job(json job) {
     job["id"] = job_id;
     send({{"type", "accepted"}, {"id", job_id}, {"filename", job.value("filename", "")}});
 #ifdef _WIN32
-    if (launch_popup_and_wait(job, job_id)) {
-        send({{"type", "done"}, {"id", job_id}});
-        log_line("popup closed " + job_id);
+    if (hand_off_to_app(job, job_id)) {
+        send({{"type", "done"}, {"id", job_id}});  // handed to the app, which owns it
         return;
     }
-    // Popup couldn't start -> download headlessly so the request isn't lost.
-    log_line("popup unavailable; headless fallback " + job_id);
+    // GUI not found -> download headlessly so the request isn't lost.
+    log_line("app unavailable; headless fallback " + job_id);
 #endif
     run_job_headless(job);
 }
