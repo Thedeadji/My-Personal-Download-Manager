@@ -65,6 +65,8 @@ int main(int argc, char** argv) {
         if ((std::strcmp(argv[i], "--shot-popup") == 0 || std::strcmp(argv[i], "--shot-popup-stream") == 0) &&
             i + 1 < argc) {
             w.devShotPopup(argv[i + 1], std::strcmp(argv[i], "--shot-popup-stream") == 0);
+        } else if (std::strcmp(argv[i], "--shot-graph") == 0 && i + 1 < argc) {
+            w.devShotGraph(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot") == 0 && i + 1 < argc) {
             QString out = argv[i + 1];
             QTimer::singleShot(900, [&w, out] { w.grab().save(out); qApp->quit(); });

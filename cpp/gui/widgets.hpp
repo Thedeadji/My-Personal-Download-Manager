@@ -176,12 +176,19 @@ protected:
     std::vector<SegmentProgress> conns_;
 };
 
-// ---- throughput graph ------------------------------------------------------
+// ---- throughput graph (Steam-style: network area + disk line + peak) --------
 class Graph : public QWidget {
 public:
     explicit Graph(QWidget* parent = nullptr) : QWidget(parent) { setMinimumHeight(118); }
     void setPalette(const Palette* p) { pal_ = p; update(); }
-    void push(double bps) { s_.push_back(bps); while (s_.size() > cap_) s_.pop_front(); peak_ = std::max(peak_, bps); update(); }
+    // net = network download speed, disk = disk write rate (bytes/s).
+    void push(double net, double disk) {
+        net_.push_back(net); disk_.push_back(disk);
+        while (net_.size() > cap_) net_.pop_front();
+        while (disk_.size() > cap_) disk_.pop_front();
+        peak_ = std::max(peak_, net);
+        update();
+    }
     double peak() const { return peak_; }
 
 protected:
@@ -193,26 +200,52 @@ protected:
         g.setPen(QPen(pal_->grid, 1));
         for (int i = 1; i < 4; ++i) { qreal y = a.top() + a.height() * i / 4.0; g.drawLine(QPointF(a.left(), y), QPointF(a.right(), y)); }
         for (qreal x = 60; x < a.width(); x += 60) g.drawLine(QPointF(x, a.top()), QPointF(x, a.bottom()));
-        if (s_.size() < 2) return;
+        if (net_.size() < 2) return;
+
+        // Nothing is drawn until a download is happening: find the active span
+        // (first..last sample with any throughput). All-idle -> just the grid.
+        int n = (int)net_.size();
+        auto live = [&](int i) { return net_[i] > 0.0 || disk_[i] > 0.0; };
+        int first = -1, last = -1;
+        for (int i = 0; i < n; ++i) if (live(i)) { if (first < 0) first = i; last = i; }
+        if (first < 0) return;  // idle: no line
+
         g.setRenderHint(QPainter::Antialiasing, true);
-        double sc = std::max(peak_ * 1.15, 1.0);
-        auto X = [&](int i) { return a.left() + a.width() * i / (cap_ - 1.0); };
+        double top = std::max(peak_, 1.0);
+        for (int i = first; i <= last; ++i) top = std::max(top, std::max(net_[i], disk_[i]));
+        double sc = top * 1.15;
+        int off = int(cap_ - n);
+        auto X = [&](int i) { return a.left() + a.width() * (off + i) / (cap_ - 1.0); };
         auto Y = [&](double v) { return a.bottom() - (v / sc) * a.height() * 0.9; };
+
+        // peak reference line (dashed) + marker
+        qreal py = Y(peak_);
+        QPen pk(pal_->amber, 1, Qt::DashLine); pk.setDashPattern({4, 4});
+        g.setPen(pk);
+        g.drawLine(QPointF(a.left(), py), QPointF(a.right(), py));
+
+        // network: filled area + line (cyan)
         QPainterPath line;
-        int off = int(cap_ - s_.size());
-        line.moveTo(X(off), Y(s_[0]));
-        for (int i = 1; i < (int)s_.size(); ++i) line.lineTo(X(off + i), Y(s_[i]));
+        line.moveTo(X(first), Y(net_[first]));
+        for (int i = first + 1; i <= last; ++i) line.lineTo(X(i), Y(net_[i]));
         QPainterPath fill = line;
-        fill.lineTo(X(cap_ - 1), a.bottom()); fill.lineTo(X(off), a.bottom()); fill.closeSubpath();
-        QColor fc = pal_->cyan; fc.setAlphaF(0.12);
+        fill.lineTo(X(last), a.bottom()); fill.lineTo(X(first), a.bottom()); fill.closeSubpath();
+        QColor fc = pal_->cyan; fc.setAlphaF(0.16);
         g.fillPath(fill, fc);
-        g.setPen(QPen(pal_->cyan, 1.6));
+        g.setPen(QPen(pal_->cyan, 1.8));
         g.drawPath(line);
+
+        // disk write rate: amber line (no fill)
+        QPainterPath dline;
+        dline.moveTo(X(first), Y(disk_[first]));
+        for (int i = first + 1; i <= last; ++i) dline.lineTo(X(i), Y(disk_[i]));
+        g.setPen(QPen(pal_->amber, 1.4));
+        g.drawPath(dline);
     }
     const Palette* pal_ = nullptr;
-    std::deque<double> s_;
+    std::deque<double> net_, disk_;
     size_t cap_ = 80;
-    double peak_ = 1;
+    double peak_ = 0;
 };
 
 // ---- chamfered button ------------------------------------------------------

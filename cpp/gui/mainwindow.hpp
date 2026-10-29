@@ -28,6 +28,7 @@ public:
     void openScheduler();
     void openPopupFor(const std::string& id, bool stream);  // live popup for a queue item
     void devShotPopup(const QString& out, bool stream);      // dev: render a popup to PNG
+    void devShotGraph(const QString& out);                   // dev: render the graph with data
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -65,6 +66,8 @@ private:
     QVBoxLayout* rowsLay_ = nullptr;
 
     QString selId_;
+    long long lastDiskBytes_ = 0;  // for disk-write-rate on the graph
+    double lastDiskT_ = 0;
     QTimer timer_;
     QTimer jobTimer_;
     std::vector<PopupWindow*> popups_;

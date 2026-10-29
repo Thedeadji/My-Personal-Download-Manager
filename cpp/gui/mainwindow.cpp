@@ -19,7 +19,9 @@
 
 #include <algorithm>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <map>
 
 #include "popup.hpp"
@@ -36,6 +38,10 @@ static QString htime(double s) {
     if (s <= 0) return "—";
     int t = (int)s, h = t / 3600, m = (t % 3600) / 60;
     return h ? QString("%1h %2m").arg(h).arg(m) : (m ? QString("%1 min").arg(m) : QString("%1s").arg(t));
+}
+static double mono_seconds() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
 const Palette* paletteForMode(const QString& mode) {
@@ -85,6 +91,21 @@ void MainWindow::pollJobs() {
             if (it->id == id) { stream = it->stream; break; }
         openPopupFor(id, stream);
     }
+}
+
+void MainWindow::devShotGraph(const QString& out) {
+    timer_.stop(); jobTimer_.stop();
+    if (graph_) {
+        for (int i = 0; i < 64; ++i) {
+            double t = i / 63.0;
+            double net = (i < 6) ? 0.0 : 7.0e6 + 3.5e6 * std::sin(t * 6.2832 * 2.2) + (i > 20 && i < 58 ? 2.0e6 : 0);
+            double disk = (net > 0) ? std::max(0.0, net * 0.82 + 7.0e5 * std::sin(t * 6.2832 * 3.3)) : 0.0;
+            graph_->push(net, disk);
+        }
+        auto set = [&](const char* id, const QString& t) { if (auto* l = findChild<QLabel*>(id)) l->setText(t); };
+        set("t_now", "NET 8.8MB/s"); set("t_disk", "DISK 7.2MB/s"); set("t_peak", "PEAK " + human(graph_->peak()) + "/s");
+    }
+    QTimer::singleShot(500, [this, out] { this->grab().save(out); qApp->quit(); });
 }
 
 void MainWindow::devShotPopup(const QString& out, bool stream) {
@@ -385,8 +406,10 @@ void MainWindow::buildUi() {
     auto* thh = new QHBoxLayout;
     thh->setSpacing(10);
     thh->addWidget(label2("Throughput", P.text3));
-    auto* now = lab("NOW 0", mono(11), P.cyan); now->setObjectName("t_now"); thh->addWidget(now);
+    auto* now = lab("NET 0", mono(11), P.cyan); now->setObjectName("t_now"); thh->addWidget(now);
+    auto* dsk = lab("DISK 0", mono(11), P.amber); dsk->setObjectName("t_disk"); thh->addWidget(dsk);
     auto* pk = lab("PEAK 0", mono(11), P.text3); pk->setObjectName("t_peak"); thh->addWidget(pk);
+    auto* du = lab("", mono(11), P.text3); du->setObjectName("t_diskfree"); thh->addWidget(du);
     thh->addStretch(1);
     for (auto r : {"1M", "10M", "1H", "10H"}) {
         auto* b = lab(r, mono(11), QString(r) == "10M" ? P.text : P.text3);
@@ -575,8 +598,34 @@ void MainWindow::refresh() {
       setText("s_today", hd.left(sp)); setText("s_today_u", hd.mid(sp)); }
     setText("s_files", QString("%1 files").arg(fin));
     setText("s_sched", "OFF");
+    // Disk write rate = bytes committed to disk since the last tick.
+    double nowT = mono_seconds();
+    double diskRate = 0;
+    if (lastDiskT_ > 0 && nowT > lastDiskT_) {
+        long long delta = dl - lastDiskBytes_;
+        if (delta > 0) diskRate = (double)delta / (nowT - lastDiskT_);
+    }
+    lastDiskBytes_ = dl; lastDiskT_ = nowT;
+    if (active == 0) diskRate = 0;  // nothing active -> flat (keeps the graph idle)
+
     if (speedMeter_) speedMeter_->set(graph_ && graph_->peak() > 0 ? g / graph_->peak() : 0, P.cyan);
-    if (graph_) { graph_->push(g); setText("t_now", "NOW " + human(g) + "/s"); setText("t_peak", "PEAK " + human(graph_->peak()) + "/s"); }
+    if (graph_) {
+        graph_->push(g, diskRate);
+        setText("t_now", "NET " + human(g) + "/s");
+        setText("t_disk", "DISK " + human(diskRate) + "/s");
+        setText("t_peak", "PEAK " + human(graph_->peak()) + "/s");
+    }
+    // Free space on the download drive.
+    {
+        std::error_code ec;
+        auto sp = std::filesystem::space(manager_.settings.output_dir, ec);
+        if (!ec && sp.capacity > 0) {
+            int usedPct = (int)((sp.capacity - sp.available) * 100 / sp.capacity);
+            setText("t_diskfree", QString("· %1% used · %2 free").arg(usedPct).arg(human((double)sp.available)));
+        } else {
+            setText("t_diskfree", "");
+        }
+    }
     setText("sb_net", "NET " + human(g) + "/s");
     setText("sb_slots", QString("SLOTS %1/%2").arg(active).arg(mc));
     setText("sb_sched", "SCHED OFF");
