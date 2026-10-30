@@ -3,7 +3,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <filesystem>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -215,7 +219,8 @@ void Download::download_segment(Segment* seg) {
                 throw DownloadError(std::string("segment ") + std::to_string(seg->index) +
                                     " failed: " + e.what());
             }
-            interruptible_sleep(std::pow(settings_.retry_backoff, attempt));
+            interruptible_sleep(settings_.retry_interval > 0 ? (double)settings_.retry_interval
+                                                             : std::pow(settings_.retry_backoff, attempt));
         }
     }
     { std::lock_guard<std::mutex> lk(mu_); --active_; }
@@ -256,7 +261,8 @@ std::string Download::download_single() {
         } catch (const HttpError& e) {
             if (++attempt > settings_.max_retries)
                 throw DownloadError(std::string("single-stream download failed: ") + e.what());
-            interruptible_sleep(std::pow(settings_.retry_backoff, attempt));
+            interruptible_sleep(settings_.retry_interval > 0 ? (double)settings_.retry_interval
+                                                             : std::pow(settings_.retry_backoff, attempt));
         }
     }
     file_.close();
@@ -264,8 +270,56 @@ std::string Download::download_single() {
     if (pause_) { status_ = Status::Paused; save(); emit_progress(true); throw DownloadError("paused"); }
     status_ = Status::Completed;
     clear_record(dest_path_);
+    relocate_from_temp();  // temp -> real destination (updates dest_path_)
+    apply_file_time();
     emit_progress(true);
     return dest_path_;
+}
+
+// Move a finished temp-dir download to its real destination (updates dest_path_).
+// Uses rename, falling back to copy+remove across drives; applies the duplicate
+// policy if a real file appeared at the destination meanwhile.
+void Download::relocate_from_temp() {
+    if (final_path_.empty()) return;
+    std::error_code ec;
+    std::string dir = fs::path(final_path_).parent_path().string();
+    fs::create_directories(dir, ec);
+    std::string target = final_path_;
+    if (fs::exists(target, ec) && settings_.duplicate_policy != "overwrite")
+        target = unique_dest(dir, fs::path(final_path_).filename().string());
+    fs::rename(dest_path_, target, ec);
+    if (ec) {  // different drive: copy then remove the temp file
+        ec.clear();
+        fs::copy_file(dest_path_, target, fs::copy_options::overwrite_existing, ec);
+        if (!ec) { std::error_code e2; fs::remove(dest_path_, e2); }
+    }
+    if (!ec) dest_path_ = target;
+    final_path_.clear();
+}
+
+// Stamp the finished file with the server's Last-Modified date, if enabled.
+void Download::apply_file_time() {
+    if (!settings_.set_file_times || !info_ || !info_->last_modified) return;
+    std::tm tm{};
+    std::istringstream ss(*info_->last_modified);
+    ss.imbue(std::locale::classic());
+    ss >> std::get_time(&tm, "%a, %d %b %Y %H:%M:%S");  // RFC 1123 (e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
+    if (ss.fail()) return;
+#ifdef _WIN32
+    std::time_t t = _mkgmtime(&tm);
+#else
+    std::time_t t = timegm(&tm);
+#endif
+    if (t == static_cast<std::time_t>(-1)) return;
+    try {
+        auto sctp = std::chrono::system_clock::from_time_t(t);
+        auto ftt = fs::file_time_type::clock::now() +
+                   std::chrono::duration_cast<fs::file_time_type::duration>(
+                       sctp - std::chrono::system_clock::now());
+        std::error_code ec;
+        fs::last_write_time(dest_path_, ftt, ec);
+    } catch (...) {
+    }
 }
 
 void Download::finish_common() {
@@ -280,6 +334,8 @@ void Download::finish_common() {
         }
     }
     clear_record(dest_path_);
+    relocate_from_temp();  // temp -> real destination (updates dest_path_)
+    apply_file_time();
     emit_progress(true);
 }
 
@@ -324,7 +380,8 @@ std::string Download::start() {
             std::transform(blow.begin(), blow.end(), blow.begin(), ::tolower);
             if (blow == "download" || base.empty() || base.find('.') == std::string::npos) {
                 std::string out_dir = categorized_dir(settings_.output_dir, good,
-                                                      settings_.categorize, settings_.category_dirs);
+                                                      settings_.categorize, settings_.category_dirs,
+                                                      settings_.category_exts);
                 std::error_code ec;
                 fs::create_directories(out_dir, ec);
                 dest_path_ = unique_dest(out_dir, good);
@@ -335,8 +392,12 @@ std::string Download::start() {
     }
 
     if (dest_path_.empty()) {
+        // Honor a caller-chosen filename (browser / Add box) but still run the
+        // duplicate-file policy on it below.
+        if (!preferred_filename_.empty()) info_->filename = preferred_filename_;
         std::string out_dir = categorized_dir(settings_.output_dir, info_->filename,
-                                              settings_.categorize, settings_.category_dirs);
+                                              settings_.categorize, settings_.category_dirs,
+                                              settings_.category_exts);
         std::error_code ec;
         fs::create_directories(out_dir, ec);
         auto resumable = find_resumable(out_dir, url_, info_->size, info_->etag);
@@ -346,7 +407,11 @@ std::string Download::start() {
             // Duplicate-file policy: a full file with this name already on disk.
             std::string candidate =
                 (fs::path(out_dir) / sanitize_filename(info_->filename)).string();
-            const std::string& pol = settings_.duplicate_policy;
+            std::string pol = settings_.duplicate_policy;
+            if (pol == "ask" && fs::exists(candidate, ec)) {
+                pol = resolver_ ? resolver_(candidate) : "rename";
+                if (pol != "skip" && pol != "overwrite" && pol != "rename") pol = "rename";
+            }
             if (fs::exists(candidate, ec) && pol == "skip") {
                 // Keep the existing file; report it complete without re-downloading.
                 dest_path_ = candidate;
@@ -374,10 +439,24 @@ std::string Download::start() {
         }
     }
 
+    // Temporary/work directory: download (and checkpoint) here, then move the
+    // finished file to its real destination. Resume still works — an interrupted
+    // temp file keeps its sidecar, and the final name resolves to the same temp
+    // path next time (the final file doesn't exist yet).
+    if (!settings_.temp_dir.empty()) {
+        std::error_code ec;
+        fs::create_directories(settings_.temp_dir, ec);
+        if (fs::is_directory(settings_.temp_dir, ec)) {
+            final_path_ = dest_path_;
+            dest_path_ = (fs::path(settings_.temp_dir) / fs::path(dest_path_).filename()).string();
+        }
+    }
+
     bool resumed = false;
     if (auto rec = load_record(dest_path_)) {
         std::error_code ec;
-        if (rec->size == info_->size && rec->etag == info_->etag && fs::exists(dest_path_, ec)) {
+        bool mtime_ok = settings_.resume_ignore_mtime || rec->last_modified == info_->last_modified;
+        if (rec->size == info_->size && rec->etag == info_->etag && mtime_ok && fs::exists(dest_path_, ec)) {
             segments_.assign(rec->segments.begin(), rec->segments.end());
             long long s = 0;
             for (const auto& seg : segments_) s += seg.downloaded;

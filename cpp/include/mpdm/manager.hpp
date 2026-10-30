@@ -42,6 +42,8 @@ struct DownloadItem {
     int connections = 0;          // 0 = use the manager default
     long long max_rate_bps = 0;   // per-download limit (0 = unlimited)
     bool incognito = false;
+    std::string output_dir;       // per-item save folder (empty = manager default)
+    std::string proxy;            // per-item proxy (empty = manager default)
     std::map<std::string, std::string> headers;
     std::string error;
     double added_at = 0.0;
@@ -97,6 +99,10 @@ public:
     // Run a program / sleep / shut down when the whole queue finishes.
     void set_on_complete(const std::string& action, const std::string& command = "");
 
+    // Resolver for the "ask" duplicate policy (a UI prompt). Each new download is
+    // given this; "" if unset -> the engine falls back to "rename".
+    void set_duplicate_resolver(DuplicateResolver r) { duplicate_resolver_ = std::move(r); }
+
     // Scheduler (thin wrappers; the thread is not started until start_scheduler()).
     void start_scheduler();
     void stop_scheduler();
@@ -132,6 +138,7 @@ private:
     std::map<std::string, std::shared_ptr<DownloadItem>> items_;
     std::vector<std::string> order_;
     std::recursive_mutex mu_;
+    DuplicateResolver duplicate_resolver_;
     RateLimiter global_limiter_;
     std::string store_;
     std::vector<std::thread> threads_;

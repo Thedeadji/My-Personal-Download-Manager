@@ -3,11 +3,26 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
 
 #include "mpdm/ratelimit.hpp"
 
 namespace mpdm {
+
+namespace fs = std::filesystem;
+
+std::string default_download_dir() {
+    const char* home = std::getenv("USERPROFILE");
+    if (!home) home = std::getenv("HOME");
+    if (!home || !*home) return ".";  // last resort; relative but better than crashing
+    fs::path dl = fs::path(home) / "Downloads";
+    std::error_code ec;
+    if (!fs::is_directory(dl, ec)) fs::create_directories(dl, ec);
+    // Fall back to the home folder itself if Downloads can't be made.
+    return fs::is_directory(dl, ec) ? dl.string() : std::string(home);
+}
 
 static std::string lower(std::string s) {
     for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -62,7 +77,7 @@ void apply_env(Settings& s) {
     if (env("MDM_DYNAMIC", v)) s.dynamic_segmentation = truthy(v);
     if (env("MDM_DUPLICATE", v)) {
         std::string p = lower(strip(v));
-        if (p == "rename" || p == "overwrite" || p == "skip") s.duplicate_policy = p;
+        if (p == "rename" || p == "overwrite" || p == "skip" || p == "ask") s.duplicate_policy = p;
     }
 }
 

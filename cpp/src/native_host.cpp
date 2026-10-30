@@ -30,6 +30,8 @@
 #include <windows.h>
 #include <fcntl.h>
 #include <io.h>
+#include <shobjidl.h>
+#pragma comment(lib, "ole32.lib")
 #endif
 
 namespace fs = std::filesystem;
@@ -122,7 +124,9 @@ static void run_job_headless(json job) {
         return;
     }
 
-    Settings settings = settings_from_env();
+    // Load the user's saved settings (so the duplicate-file policy, categories, etc.
+    // match the app), with env overlaid. "ask" can't prompt headlessly -> rename.
+    Settings settings = load_user_settings();
     if (job.contains("connections") && !job["connections"].is_null()) {
         try {
             settings.connections = std::max(1, job["connections"].get<int>());
@@ -132,16 +136,11 @@ static void run_job_headless(json job) {
     if (job.contains("output_dir") && job["output_dir"].is_string())
         settings.output_dir = job["output_dir"].get<std::string>();
 
-    std::string dest;
+    std::string dest;  // empty -> the engine resolves the folder + applies the dup policy
+    std::string preferred;
     if (job.contains("filename") && job["filename"].is_string() &&
-        !job["filename"].get<std::string>().empty()) {
-        std::string fname = sanitize_filename(job["filename"].get<std::string>());
-        std::string out_dir =
-            categorized_dir(settings.output_dir, fname, settings.categorize, settings.category_dirs);
-        std::error_code ec;
-        fs::create_directories(out_dir, ec);
-        dest = unique_dest(out_dir, fname);
-    }
+        !job["filename"].get<std::string>().empty())
+        preferred = sanitize_filename(job["filename"].get<std::string>());
 
     std::map<std::string, std::string> headers;
     if (job.contains("headers") && job["headers"].is_object())
@@ -154,13 +153,20 @@ static void run_job_headless(json job) {
     try {
         std::string path;
         if (is_stream_job(url, stream_flag)) {
-            std::string out = dest.empty() ? (fs::path(settings.output_dir) / "video.mp4").string() : dest;
-            std::string low = out;
+            std::string base = preferred.empty() ? "video.mp4" : preferred;
+            std::string low = base;
             for (auto& c : low) c = static_cast<char>(::tolower(c));
             if (!(low.size() >= 4 &&
                   (low.rfind(".mp4") == low.size() - 4 || low.rfind(".mkv") == low.size() - 4 ||
                    low.rfind(".webm") == low.size() - 5)))
-                out += ".mp4";
+                base += ".mp4";
+            std::string out = dest;
+            if (out.empty()) {
+                std::string dir = categorized_dir(settings.output_dir, base, settings.categorize,
+                                                  settings.category_dirs, settings.category_exts);
+                std::error_code ec; fs::create_directories(dir, ec);
+                out = unique_dest(dir, base);
+            }
             GrabProgressCb cb = [&](int done, int total) {
                 double now = now_seconds();
                 if (now - last_emit < 0.3) return;
@@ -189,6 +195,7 @@ static void run_job_headless(json job) {
                 send(m);
             };
             Download dl(url, settings, dest, cb, headers);
+            if (dest.empty() && !preferred.empty()) dl.set_preferred_filename(preferred);
             path = dl.start();
         }
         send({{"type", "done"}, {"id", job_id}, {"path", path}});
@@ -271,6 +278,47 @@ static bool hand_off_to_app(const json& job, const std::string& job_id) {
 
 #endif  // _WIN32
 
+#ifdef _WIN32
+// Open the system "Save As" dialog and return the chosen full path (UTF-8), or ""
+// if the user cancels. The browser popup can't show a native dialog, so it asks
+// the host to do it.
+static std::string browse_save_as(const std::string& suggested_utf8) {
+    std::string result;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    bool did_init = SUCCEEDED(hr);
+    IFileSaveDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&dlg)))) {
+        if (!suggested_utf8.empty()) {
+            int wn = MultiByteToWideChar(CP_UTF8, 0, suggested_utf8.c_str(), -1, nullptr, 0);
+            if (wn > 0) {
+                std::wstring w(wn - 1, L'\0');
+                MultiByteToWideChar(CP_UTF8, 0, suggested_utf8.c_str(), -1, w.data(), wn);
+                dlg->SetFileName(w.c_str());
+            }
+        }
+        DWORD opts = 0; dlg->GetOptions(&opts); dlg->SetOptions(opts | FOS_OVERWRITEPROMPT);
+        if (SUCCEEDED(dlg->Show(nullptr))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+                    int n = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+                    if (n > 0) { std::string s(n - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, s.data(), n, nullptr, nullptr);
+                        result = s; }
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    }
+    if (did_init) CoUninitialize();
+    return result;
+}
+#endif  // _WIN32
+
 static void run_job(json job) {
     std::string job_id = job.value("id", "");
     if (job_id.empty()) job_id = std::to_string(static_cast<long long>(now_seconds() * 1000));
@@ -309,6 +357,12 @@ static int serve() {
         std::string type = msg.value("type", "");
         if (type == "ping") {
             send({{"type", "pong"}});
+        } else if (type == "browse") {
+#ifdef _WIN32
+            send({{"type", "browsed"}, {"path", browse_save_as(msg.value("filename", ""))}});
+#else
+            send({{"type", "browsed"}, {"path", ""}});
+#endif
         } else if (type == "download") {
             threads.emplace_back(run_job, msg);
         } else {
@@ -321,7 +375,21 @@ static int serve() {
     return 0;
 }
 
-// ---- native-messaging host registration (Windows) --------------------------
+// ---- native-messaging host registration ------------------------------------
+
+// Read the extension ID from the console when it wasn't passed on the command
+// line (used by the installer's "register later" shortcut and a bare --register).
+static std::string prompt_ext_id() {
+    std::cout << "\nLoad the MPDM extension at chrome://extensions\n"
+                 "(Developer mode -> Load unpacked -> the 'extension' folder next to this app),\n"
+                 "then paste its ID below.\n\nExtension ID: "
+              << std::flush;
+    std::string id;
+    std::getline(std::cin, id);
+    size_t a = id.find_first_not_of(" \t\r\n");
+    size_t b = id.find_last_not_of(" \t\r\n");
+    return a == std::string::npos ? std::string() : id.substr(a, b - a + 1);
+}
 
 #ifdef _WIN32
 static const char* HOST_NAME = "com.mypersonaldownloadmanager.host";
@@ -337,9 +405,10 @@ static bool reg_set_default(const std::wstring& subkey, const std::wstring& valu
     return r == ERROR_SUCCESS;
 }
 
-static int do_register(const std::string& ext_id, bool chrome, bool edge) {
+static int do_register(const std::string& ext_id_in, bool chrome, bool edge) {
+    std::string ext_id = ext_id_in.empty() ? prompt_ext_id() : ext_id_in;
     if (ext_id.empty()) {
-        std::cerr << "error: --register needs --extension-id <ID> (from chrome://extensions)\n";
+        std::cerr << "error: no extension ID given.\n";
         return 2;
     }
     fs::path exe = []() {
@@ -386,6 +455,58 @@ static int do_unregister(bool chrome, bool edge) {
 }
 #endif  // _WIN32
 
+#ifndef _WIN32
+static const char* HOST_NAME = "com.mypersonaldownloadmanager.host";
+
+// Browser config dirs under ~/.config that use Chrome-style native messaging.
+static const char* kBrowserDirs[] = {
+    "google-chrome", "chromium", "microsoft-edge",
+    "google-chrome-beta", "BraveSoftware/Brave-Browser",
+};
+
+static int do_register_posix(const std::string& ext_id_in) {
+    std::string ext_id = ext_id_in.empty() ? prompt_ext_id() : ext_id_in;
+    if (ext_id.empty()) {
+        std::cerr << "error: no extension ID given.\n";
+        return 2;
+    }
+    std::error_code ec;
+    fs::path exe = fs::read_symlink("/proc/self/exe", ec);  // this host binary
+    if (ec || exe.empty()) exe = "mpdm_host";
+    const char* home = std::getenv("HOME");
+    if (!home) { std::cerr << "error: HOME not set\n"; return 1; }
+    json m = {{"name", HOST_NAME},
+              {"description", "MyPersonalDownloadManager native host"},
+              {"path", exe.string()},
+              {"type", "stdio"},
+              {"allowed_origins", json::array({std::string("chrome-extension://") + ext_id + "/"})}};
+    bool any = false;
+    for (auto* b : kBrowserDirs) {
+        fs::path bdir = fs::path(home) / ".config" / b;
+        if (!fs::is_directory(bdir, ec)) continue;  // that browser isn't installed
+        fs::path dir = bdir / "NativeMessagingHosts";
+        fs::create_directories(dir, ec);
+        fs::path manifest = dir / (std::string(HOST_NAME) + ".json");
+        std::ofstream f(manifest, std::ios::trunc);
+        if (f) { f << m.dump(2); std::cout << "registered: " << manifest.string() << "\n"; any = true; }
+    }
+    if (!any) std::cerr << "no supported browser config dir under " << home << "/.config\n";
+    return any ? 0 : 1;
+}
+
+static int do_unregister_posix() {
+    const char* home = std::getenv("HOME");
+    if (!home) return 1;
+    std::error_code ec;
+    for (auto* b : kBrowserDirs)
+        fs::remove(fs::path(home) / ".config" / b / "NativeMessagingHosts" /
+                       (std::string(HOST_NAME) + ".json"),
+                   ec);
+    std::cout << "unregistered native host (" << HOST_NAME << ")\n";
+    return 0;
+}
+#endif  // !_WIN32
+
 static int selftest() {
     std::stringstream buf;
     write_frame(buf, json({{"type", "download"}, {"url", "https://example.com/x"},
@@ -425,6 +546,18 @@ int run_native_host(int argc, char** argv) {
             if (!chrome && !edge) chrome = edge = true;  // default: both
             return reg ? do_register(ext_id, chrome, edge) : do_unregister(chrome, edge);
         }
+    }
+#else
+    {
+        bool reg = false, unreg = false;
+        std::string ext_id;
+        for (int i = 1; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a == "--register") reg = true;
+            else if (a == "--unregister") unreg = true;
+            else if (a == "--extension-id" && i + 1 < argc) ext_id = argv[++i];
+        }
+        if (reg || unreg) return reg ? do_register_posix(ext_id) : do_unregister_posix();
     }
 #endif
 #ifdef _WIN32

@@ -33,6 +33,7 @@ static json settings_to_json(const Settings& s) {
             {"read_timeout", s.read_timeout},
             {"max_retries", s.max_retries},
             {"retry_backoff", s.retry_backoff},
+            {"retry_interval", s.retry_interval},
             {"user_agent", s.user_agent},
             {"output_dir", s.output_dir},
             {"verify_tls", s.verify_tls},
@@ -40,8 +41,13 @@ static json settings_to_json(const Settings& s) {
             {"max_rate_bps", s.max_rate_bps},
             {"categorize", s.categorize},
             {"category_dirs", s.category_dirs},
+            {"category_exts", s.category_exts},
+            {"remember_category_folder", s.remember_category_folder},
+            {"temp_dir", s.temp_dir},
+            {"set_file_times", s.set_file_times},
             {"dynamic_segmentation", s.dynamic_segmentation},
-            {"duplicate_policy", s.duplicate_policy}};
+            {"duplicate_policy", s.duplicate_policy},
+            {"resume_ignore_mtime", s.resume_ignore_mtime}};
 }
 
 static void apply_settings_json(Settings& s, const json& j) {
@@ -52,6 +58,7 @@ static void apply_settings_json(Settings& s, const json& j) {
     s.read_timeout = j.value("read_timeout", s.read_timeout);
     s.max_retries = j.value("max_retries", s.max_retries);
     s.retry_backoff = j.value("retry_backoff", s.retry_backoff);
+    s.retry_interval = j.value("retry_interval", s.retry_interval);
     s.user_agent = j.value("user_agent", s.user_agent);
     s.output_dir = j.value("output_dir", s.output_dir);
     s.verify_tls = j.value("verify_tls", s.verify_tls);
@@ -60,8 +67,15 @@ static void apply_settings_json(Settings& s, const json& j) {
     s.categorize = j.value("categorize", s.categorize);
     if (j.contains("category_dirs") && j["category_dirs"].is_object())
         s.category_dirs = j["category_dirs"].get<std::map<std::string, std::string>>();
+    if (j.contains("category_exts") && j["category_exts"].is_object())
+        s.category_exts = j["category_exts"].get<std::map<std::string, std::string>>();
+    if (j.contains("remember_category_folder") && j["remember_category_folder"].is_object())
+        s.remember_category_folder = j["remember_category_folder"].get<std::map<std::string, bool>>();
+    s.temp_dir = j.value("temp_dir", s.temp_dir);
+    s.set_file_times = j.value("set_file_times", s.set_file_times);
     s.dynamic_segmentation = j.value("dynamic_segmentation", s.dynamic_segmentation);
     s.duplicate_policy = j.value("duplicate_policy", s.duplicate_policy);
+    s.resume_ignore_mtime = j.value("resume_ignore_mtime", s.resume_ignore_mtime);
 }
 
 static json load_prefs() {
@@ -98,6 +112,15 @@ static std::string home_dir() {
 }
 
 std::string state_dir() {
+    // MPDM_STATE_DIR isolates a run's state (downloads.json, jobs, settings) from
+    // the user's real profile — used by dev/screenshot runs and tests so they never
+    // pollute the installed app's queue.
+    if (const char* s = std::getenv("MPDM_STATE_DIR"); s && *s) {
+        fs::path d = s;
+        std::error_code ec;
+        fs::create_directories(d, ec);
+        return d.string();
+    }
     fs::path d = fs::path(home_dir()) / ".mypersonaldownloadmanager";
     std::error_code ec;
     fs::create_directories(d, ec);
@@ -182,6 +205,8 @@ static json item_to_json(const DownloadItem& it) {
     j["connections"] = it.connections ? json(it.connections) : json(nullptr);
     j["max_rate_bps"] = it.max_rate_bps;
     j["incognito"] = it.incognito;
+    j["output_dir"] = it.output_dir;
+    j["proxy"] = it.proxy;
     j["stream"] = it.stream;
     j["headers"] = it.headers;
     j["error"] = it.error;
@@ -228,6 +253,8 @@ void DownloadManager::load() {
                 it->connections = j["connections"].get<int>();
             it->max_rate_bps = j.value("max_rate_bps", 0LL);
             it->incognito = j.value("incognito", false);
+            it->output_dir = j.value("output_dir", "");
+            it->proxy = j.value("proxy", "");
             it->stream = j.value("stream", false);
             if (j.contains("headers")) it->headers = j["headers"].get<std::map<std::string, std::string>>();
             it->error = j.value("error", "");
@@ -329,6 +356,8 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
     Settings s = settings;
     if (item->connections) s.connections = item->connections;
     if (item->max_rate_bps) s.max_rate_bps = item->max_rate_bps;
+    if (!item->output_dir.empty()) s.output_dir = item->output_dir;  // per-item "Save to"
+    if (!item->proxy.empty()) s.proxy = item->proxy;                 // per-item proxy
     if (item->incognito) {
         s.output_dir = ensure_hidden_dir((fs::path(s.output_dir) / INCOGNITO_DIRNAME).string());
         s.categorize = false;
@@ -345,7 +374,7 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
             if (low.size() < 4 || (low.rfind(".mp4") != low.size() - 4 && low.rfind(".mkv") != low.size() - 4 &&
                                    low.rfind(".webm") != low.size() - 5))
                 fname += ".mp4";
-            std::string dir = categorized_dir(s.output_dir, fname, s.categorize, s.category_dirs);
+            std::string dir = categorized_dir(s.output_dir, fname, s.categorize, s.category_dirs, s.category_exts);
             std::error_code ec; fs::create_directories(dir, ec);
             out = unique_dest(dir, fname);
         }
@@ -381,15 +410,14 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
         }
     };
 
-    // Honor a caller-supplied filename (e.g. from the browser) when no dest yet.
+    // dest is set only for a resume / an explicit path. Otherwise pass the caller's
+    // filename to the engine as a preference so the engine (not us) resolves the
+    // folder AND applies the duplicate-file policy (rename / overwrite / skip / ask).
     std::string dest = item->dest_path;
-    if (dest.empty() && !item->filename.empty()) {
-        std::string fn = sanitize_filename(item->filename);
-        std::string dir = categorized_dir(s.output_dir, fn, s.categorize, s.category_dirs);
-        std::error_code ec; fs::create_directories(dir, ec);
-        dest = unique_dest(dir, fn);
-    }
     auto dl = std::make_shared<Download>(item->url, s, dest, cb, item->headers, &global_limiter_);
+    if (dest.empty() && !item->filename.empty())
+        dl->set_preferred_filename(sanitize_filename(item->filename));
+    if (duplicate_resolver_) dl->set_duplicate_resolver(duplicate_resolver_);
     item->dl = dl;
     try {
         std::string path = dl->start();
@@ -398,6 +426,19 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
         item->status = ST_COMPLETED;
         item->speed = 0;
         item->eta = 0;
+        // "Remember the folder I last chose for this category": when on, update the
+        // category's default folder to wherever this (non-incognito) download landed.
+        if (!item->incognito) {
+            std::string cat = classify(item->filename, settings.category_exts);
+            auto rit = settings.remember_category_folder.find(cat);
+            if (rit != settings.remember_category_folder.end() && rit->second) {
+                std::string folder = fs::path(path).parent_path().string();
+                if (!folder.empty() && settings.category_dirs[cat] != folder) {
+                    settings.category_dirs[cat] = folder;
+                    save_settings();
+                }
+            }
+        }
     } catch (const DownloadError& e) {
         std::string msg = e.what();
         if (msg.find("paused") != std::string::npos) {
@@ -680,9 +721,19 @@ std::vector<std::string> DownloadManager::ingest_jobs() {
                 if (it.value().is_string()) headers[it.key()] = it.value().get<std::string>();
         bool stream = j.value("stream", false);
         bool incognito = j.value("incognito", false);
-        auto item = add(url, filename, conns, std::move(headers), /*start=*/true, /*rate=*/0, incognito, stream);
-        if (item) ids.push_back(item->id);
+        long long rate = 0;
+        if (j.contains("rate") && j["rate"].is_number()) rate = j["rate"].get<long long>();
+        // Add paused so per-item overrides are set before the worker thread reads
+        // them (run() snapshots settings at the top), then pump once below.
+        auto item = add(url, filename, conns, std::move(headers), /*start=*/false, rate, incognito, stream);
+        if (item) {
+            item->output_dir = j.value("output_dir", "");
+            item->proxy = j.value("proxy", "");
+            item->status = ST_QUEUED;
+            ids.push_back(item->id);
+        }
     }
+    if (!ids.empty()) { save(); pump(); }
     return ids;
 }
 

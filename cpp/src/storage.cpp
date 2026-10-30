@@ -110,16 +110,22 @@ std::optional<std::string> find_resumable(const std::string& dir, const std::str
 }
 
 std::string unique_dest(const std::string& dir, const std::string& filename) {
+    // A name is "taken" only by a real, complete file the user already has — i.e. a
+    // file with NO .mpdm sidecar. A file that still has a sidecar is MPDM's own
+    // unfinished download, which we reuse (resume/overwrite) rather than bump to
+    // "(1)"; an orphan sidecar with no file is just stale and ignored. So "(1)" is
+    // added only on a genuine duplicate.
+    auto taken = [](const fs::path& p) {
+        std::error_code ec;
+        return fs::exists(p, ec) && !fs::exists(sidecar_path(p.string()), ec);
+    };
     fs::path base = fs::path(dir) / filename;
-    std::error_code ec;
-    if (!fs::exists(base, ec) && !fs::exists(sidecar_path(base.string()), ec))
-        return base.string();
+    if (!taken(base)) return base.string();
     std::string stem = fs::path(filename).stem().string();
     std::string ext = fs::path(filename).extension().string();
     for (int i = 1;; ++i) {
         fs::path cand = fs::path(dir) / (stem + " (" + std::to_string(i) + ")" + ext);
-        if (!fs::exists(cand, ec) && !fs::exists(sidecar_path(cand.string()), ec))
-            return cand.string();
+        if (!taken(cand)) return cand.string();
     }
 }
 
