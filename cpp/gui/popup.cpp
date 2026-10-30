@@ -217,7 +217,8 @@ void PopupWindow::buildFile() {
                                     "QCheckBox::indicator:checked{background:%4;border:1px solid %4}")
                                 .arg(P.text2.name(), P.well.name(), P.bevelLight.name(), P.amber.name()));
     fl->addWidget(openChk_); fl->addStretch(1);
-    stopBtn_ = new IndBtn("Stop"); stopBtn_->setPalette(pal_);
+    stopBtn_ = new IndBtn("Cancel"); stopBtn_->setPalette(pal_);
+    stopBtn_->setToolTip("Cancel this download (removes it from the queue)");
     pauseBtn_ = new IndBtn("Pause", true); pauseBtn_->setPalette(pal_);
     closeFooterBtn_ = new IndBtn("Close"); closeFooterBtn_->setPalette(pal_); closeFooterBtn_->hide();
     fl->addWidget(stopBtn_); fl->addWidget(pauseBtn_); fl->addWidget(closeFooterBtn_);
@@ -287,7 +288,8 @@ void PopupWindow::buildStream() {
     fl->addWidget(lab("Stream grabs can't be paused", barlow(12), P.text3));
     fl->addStretch(1);
     pauseBtn_ = new IndBtn("Pause"); pauseBtn_->setPalette(pal_); pauseBtn_->setEnabled(false);
-    stopBtn_ = new IndBtn("Stop"); stopBtn_->setPalette(pal_);
+    stopBtn_ = new IndBtn("Cancel"); stopBtn_->setPalette(pal_);
+    stopBtn_->setToolTip("Cancel this download (removes it from the queue)");
     closeFooterBtn_ = new IndBtn("Close"); closeFooterBtn_->setPalette(pal_); closeFooterBtn_->hide();
     fl->addWidget(pauseBtn_); fl->addWidget(stopBtn_); fl->addWidget(closeFooterBtn_);
     root->addWidget(footer);

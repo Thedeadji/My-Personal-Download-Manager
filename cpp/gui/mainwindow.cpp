@@ -136,6 +136,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     timer_.start(1000);
     connect(&jobTimer_, &QTimer::timeout, this, &MainWindow::pollJobs);
     jobTimer_.start(500);
+    // Update notifier: check shortly after startup, then every few hours.
+    QTimer::singleShot(8000, this, [this] { maybeAutoCheckUpdates(true); });
+    connect(&updateTimer_, &QTimer::timeout, this, [this] { maybeAutoCheckUpdates(false); });
+    updateTimer_.start(3 * 3600 * 1000);
     refresh();
     pollJobs();  // adopt anything already waiting (e.g. we were launched for it)
 }
@@ -745,6 +749,7 @@ void MainWindow::buildUi() {
     auto* root = new QVBoxLayout(central);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(6);
+    root->addWidget(buildUpdateBar());  // hidden unless an update is available
 
     // ---- title bar (frameless: also carries the window controls) ----
     auto* title = surf(Surface::TitleBar);
@@ -820,6 +825,7 @@ void MainWindow::buildUi() {
     // Frameless move/resize: drag the title bar; resize from the outer frame's
     // 6px ring (always at the window edge, even while the body scrolls).
     new FramelessChrome(this, title, outerFrame, [this] { toggleMaximize(); });
+    showUpdateBar();
 
     // ---- readout tiles ----
     auto* tiles = new QHBoxLayout;
@@ -1198,6 +1204,8 @@ void MainWindow::refresh() {
         if (it->status == ST_COMPLETED) fin++;
     }
     int mc = manager_.max_concurrent;
+    // A downloaded + verified update installs as soon as nothing is downloading.
+    if (!updateFile_.isEmpty() && active == 0) launchInstaller();
 
     bool newlyFinished = fin > lastFinished_;
     // Notify from the tray when a download finishes while minimized.

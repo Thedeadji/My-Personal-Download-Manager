@@ -22,6 +22,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPointer>
 #include <QProcess>
 #include <QPainterPath>
 #include <QPainter>
@@ -530,6 +531,24 @@ void MainWindow::openSettings() {
     auto* runStartup = new QCheckBox("Launch MPDM when the system starts (in the background)");
     runStartup->setChecked(autostart_enabled());
     gc->addWidget(runStartup);
+
+    gc->addSpacing(4);
+    gc->addWidget(sectionHead("UPDATES"));
+    auto* updCheck = new QCheckBox("Check for new versions automatically (once a day)");
+    updCheck->setChecked(QSettings().value("update_check", true).toBool());
+    gc->addWidget(updCheck);
+    auto* updRow = new QHBoxLayout();
+    auto* updNow = new IndBtn("Check now"); updNow->setPalette(pal_);
+    auto* updStatus = new QLabel(QString("You have MPDM %1.").arg(appVersion()));
+    updStatus->setFont(barlow(12)); updStatus->setWordWrap(true);
+    updStatus->setStyleSheet("color:" + hx(P.text3) + ";background:transparent");
+    updRow->addWidget(updNow); updRow->addWidget(updStatus, 1);
+    gc->addLayout(updRow);
+    connect(updNow, &QAbstractButton::clicked, &dlg, [this, updStatus] {
+        updStatus->setText("Checking…");
+        QPointer<QLabel> st(updStatus);
+        checkForUpdates(true, [st](const QString& msg) { if (st) st->setText(msg); });
+    });
     gc->addStretch(1);
 
     // ========== Save locations ==========
@@ -1066,6 +1085,7 @@ void MainWindow::openSettings() {
         QSettings().setValue("finish_popup", finishPopup->isChecked());
         QSettings().setValue("show_popups", showPopups->isChecked());
         QSettings().setValue("autostart", autostart->isChecked());
+        QSettings().setValue("update_check", updCheck->isChecked());
         set_autostart(runStartup->isChecked());
         QString mode = appearance->currentText().toLower();
         dlg.accept();
@@ -1419,6 +1439,11 @@ right away</b> (untick to only add them to the queue).</li>
 <li><b>Ignore the server's file time when resuming</b> &mdash; keep resuming even if the
 server reports a new modification date (size and ETag must still match).</li>
 <li><b>Launch MPDM when the system starts</b> &mdash; starts quietly in the tray.</li>
+<li><b>Check for new versions automatically</b> &mdash; once a day MPDM asks GitHub for
+the latest release and shows a banner when there's a new one. <span class="k">Update
+now</span> downloads the installer, checks it against the release's published checksum,
+waits until your downloads finish, then installs and restarts MPDM. <span class="k">Check
+now</span> checks immediately.</li>
 </ul>
 
 <h3>SAVE LOCATIONS</h3>

@@ -10,6 +10,7 @@ set(MPDM_GUI_SOURCES
     dialogs.cpp
     popup.cpp
     fileicon.cpp
+    updater.cpp
     fonts.qrc
 )
 if(WIN32)
@@ -19,6 +20,8 @@ endif()
 qt_add_executable(mpdm_gui ${MPDM_GUI_SOURCES})
 target_include_directories(mpdm_gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mpdm_gui PRIVATE mpdm_core Qt6::Widgets Qt6::Network)
+# Version shown in the app and compared against GitHub releases by the updater.
+target_compile_definitions(mpdm_gui PRIVATE MPDM_VERSION="${MPDM_VERSION}")
 
 if(WIN32)
     set_target_properties(mpdm_gui PROPERTIES WIN32_EXECUTABLE ON)

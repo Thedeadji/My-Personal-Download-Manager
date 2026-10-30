@@ -18,6 +18,8 @@ class QSystemTrayIcon;
 class QCloseEvent;
 class QComboBox;
 class QMenu;
+class QNetworkAccessManager;
+class QLabel;
 class QPushButton;
 
 namespace mpdm::gui {
@@ -30,7 +32,8 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     void openSettings();
     void openScheduler();
-    void openHelp(int page = 0);  // the (?) button: About / Connect a browser / Settings explained
+    void openHelp(int page = 0);
+    static QString appVersion();  // this build's version (MPDM_VERSION)  // the (?) button: About / Connect a browser / Settings explained
     void openPopupFor(const std::string& id, bool stream);  // live popup for a queue item
     void devShotPopup(const QString& out, bool stream);      // dev: render a popup to PNG
     void devShotGraph(const QString& out);                   // dev: render the graph with data
@@ -39,7 +42,8 @@ public:
     void devShotQuickPanel(const QString& out);              // dev: render the left-click quick panel
     void devShotTrayIcons(const QString& out);               // dev: render the tray icon states strip
     void devShotDeselect(const QString& out);
-    void devShotIcons(const QString& out);                   // dev: queue of mixed file types                // dev: select an item, remove it, render
+    void devShotIcons(const QString& out);
+    void devTestUpdate(const QString& out);                  // dev: exercise the updater end to end                   // dev: queue of mixed file types                // dev: select an item, remove it, render
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -66,6 +70,14 @@ private:
     void showFromTray();
     void showDownloadPopups();  // open/raise the live popup(s) for current downloads
     void quitApp();  // real exit (from tray menu)
+
+    // ---- updates (updater.cpp) ----
+    void checkForUpdates(bool manual, std::function<void(const QString&)> report = {});
+    void maybeAutoCheckUpdates(bool startup);
+    QWidget* buildUpdateBar();
+    void showUpdateBar();
+    void startUpdate();
+    void launchInstaller();
     void pollJobs();  // adopt browser jobs the native host dropped, open popups
 
     // register a widget that has setPalette(const Palette*)
@@ -100,7 +112,17 @@ private:
     QPushButton* maxBtn_ = nullptr;  // title-bar maximize/restore button (glyph toggles)
 
     QSystemTrayIcon* tray_ = nullptr;
-    QMenu* trayMenu_ = nullptr;      // owned context menu, re-themed on appearance change
+    QMenu* trayMenu_ = nullptr;
+    struct UpdateInfo { QString version, page, notes, installer, installerName, sums; } upd_;
+    QNetworkAccessManager* net_ = nullptr;
+    QWidget* updateBar_ = nullptr;
+    QLabel* updateText_ = nullptr;
+    IndBtn* updateNowBtn_ = nullptr;
+    QString updateFile_;            // verified installer waiting for the queue to go idle
+    QString updateProgress_;
+    bool updateBusy_ = false;
+    bool updateDismissed_ = false;  // "Later": hidden for this session
+    QTimer updateTimer_;      // owned context menu, re-themed on appearance change
     QWidget* quickPanel_ = nullptr;  // left-click quick panel (recreated each open)
     bool allowQuit_ = false;        // set true only when quitting for real
     bool trayHintShown_ = false;    // show the "still running" balloon once

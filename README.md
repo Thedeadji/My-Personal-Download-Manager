@@ -125,6 +125,10 @@ Download the latest files from the
 3. Start **MPDM**. Closing the window keeps it running in the tray; quit from the
    tray icon's menu.
 
+MPDM checks GitHub for new versions once a day (toggle in **Settings → General**). When one
+is out, a banner offers **Update now**: it downloads the installer, verifies its checksum,
+waits for your downloads to finish, then installs and restarts MPDM.
+
 Uninstall from *Settings → Apps*; it also disconnects the browsers.
 
 ### Linux

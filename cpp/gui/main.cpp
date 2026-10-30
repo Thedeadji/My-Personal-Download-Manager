@@ -24,6 +24,9 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setApplicationName("MyPersonalDownloadManager");
     app.setOrganizationName("MPDM");
+#ifdef MPDM_VERSION
+    app.setApplicationVersion(MPDM_VERSION);
+#endif
 
     for (const char* f : {":/fonts/fonts/ChakraPetch-Medium.ttf", ":/fonts/fonts/ChakraPetch-SemiBold.ttf",
                           ":/fonts/fonts/Barlow-Regular.ttf", ":/fonts/fonts/Barlow-Medium.ttf",
@@ -61,7 +64,7 @@ int main(int argc, char** argv) {
     bool background = false, isShot = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--background")) background = true;
-        if (!std::strncmp(argv[i], "--shot", 6)) isShot = true;
+        if (!std::strncmp(argv[i], "--shot", 6) || !std::strcmp(argv[i], "--test-update")) isShot = true;
     }
 
     // Single instance: the native host launches the app for each browser download;
@@ -101,6 +104,8 @@ int main(int argc, char** argv) {
             w.devShotTrayMenu(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot-quickpanel") == 0 && i + 1 < argc) {
             w.devShotQuickPanel(argv[i + 1]);
+        } else if (std::strcmp(argv[i], "--test-update") == 0 && i + 1 < argc) {
+            w.devTestUpdate(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot-icons") == 0 && i + 1 < argc) {
             w.devShotIcons(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot-deselect") == 0 && i + 1 < argc) {

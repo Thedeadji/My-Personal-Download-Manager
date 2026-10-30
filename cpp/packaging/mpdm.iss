@@ -65,6 +65,9 @@ Filename: "{app}\{#HostExe}"; Parameters: "--register --firefox"; Flags: runhidd
 ; Open the extension folder so the user can load it unpacked in the browser.
 Filename: "{win}\explorer.exe"; Parameters: """{app}\extension"""; Description: "Open the browser extension folder"; Flags: postinstall skipifsilent nowait
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+; In-app updates run the installer with /RELAUNCH=1: start MPDM again afterwards,
+; as the signed-in user (not elevated).
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: IsRelaunch
 
 [UninstallRun]
 ; Remove the native-host registration on uninstall.
@@ -85,6 +88,11 @@ begin
     '-> Developer mode -> Load unpacked), paste its ID below. Otherwise leave this blank and ' +
     'add it later in MPDM -> Settings -> Browser (you can connect several browsers).');
   ExtPage.Add('Extension ID (optional):', False);
+end;
+
+function IsRelaunch(): Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
 end;
 
 function GetExtId(Param: string): string;
