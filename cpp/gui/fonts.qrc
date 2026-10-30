@@ -6,4 +6,7 @@
   <file>fonts/Barlow-Medium.ttf</file>
   <file>fonts/JetBrainsMono.ttf</file>
 </qresource>
+<qresource prefix="/icons">
+  <file alias="check.png">icons/check.png</file>
+</qresource>
 </RCC>

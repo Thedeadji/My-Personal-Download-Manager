@@ -3,15 +3,19 @@
 // throughput graph, chamfered buttons, and the logo. Plain QWidget subclasses.
 #pragma once
 #include <QAbstractButton>
+#include <QEvent>
 #include <QFont>
 #include <QIcon>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRadialGradient>
 #include <QWidget>
+#include <QWindow>
 
 #include <algorithm>
 #include <deque>
+#include <functional>
 #include <vector>
 
 #include "mpdm/models.hpp"
@@ -276,6 +280,74 @@ protected:
     }
     bool primary_;
     const Palette* pal_ = nullptr;
+};
+
+// ---- frameless window chrome ----------------------------------------------
+// Makes a frameless window behave like a native one: drag the title bar to move
+// (and optionally double-click to maximize), and drag the edges of a host widget
+// to resize. `host` must expose an outer ring of its own (e.g. a layout margin)
+// so its edge pixels receive mouse events. An event filter, no moc needed.
+class FramelessChrome : public QObject {
+public:
+    FramelessChrome(QWidget* win, QWidget* titleBar, QWidget* host,
+                    std::function<void()> onDblClick = {})
+        : QObject(host ? host : win), win_(win), title_(titleBar), host_(host),
+          dbl_(std::move(onDblClick)) {
+        if (host_) { host_->setMouseTracking(true); host_->installEventFilter(this); }
+        if (title_) title_->installEventFilter(this);
+    }
+
+protected:
+    Qt::Edges edgeAt(const QPoint& p) const {
+        const int m = 7;
+        Qt::Edges e;
+        if (!host_) return e;
+        if (p.x() <= m) e |= Qt::LeftEdge;
+        if (p.x() >= host_->width() - m) e |= Qt::RightEdge;
+        if (p.y() <= m) e |= Qt::TopEdge;
+        if (p.y() >= host_->height() - m) e |= Qt::BottomEdge;
+        return e;
+    }
+    bool eventFilter(QObject* o, QEvent* e) override {
+        if (o == host_) {
+            if (e->type() == QEvent::MouseMove) {
+                Qt::Edges ed = edgeAt(static_cast<QMouseEvent*>(e)->position().toPoint());
+                if ((ed & Qt::LeftEdge && ed & Qt::TopEdge) || (ed & Qt::RightEdge && ed & Qt::BottomEdge))
+                    host_->setCursor(Qt::SizeFDiagCursor);
+                else if ((ed & Qt::RightEdge && ed & Qt::TopEdge) || (ed & Qt::LeftEdge && ed & Qt::BottomEdge))
+                    host_->setCursor(Qt::SizeBDiagCursor);
+                else if (ed & (Qt::LeftEdge | Qt::RightEdge))
+                    host_->setCursor(Qt::SizeHorCursor);
+                else if (ed & (Qt::TopEdge | Qt::BottomEdge))
+                    host_->setCursor(Qt::SizeVerCursor);
+                else
+                    host_->unsetCursor();
+            } else if (e->type() == QEvent::MouseButtonPress) {
+                auto* me = static_cast<QMouseEvent*>(e);
+                Qt::Edges ed = edgeAt(me->position().toPoint());
+                if (me->button() == Qt::LeftButton && ed && !win_->isMaximized() && win_->windowHandle()) {
+                    win_->windowHandle()->startSystemResize(ed);
+                    return true;
+                }
+            }
+        } else if (o == title_) {
+            if (e->type() == QEvent::MouseButtonPress) {
+                auto* me = static_cast<QMouseEvent*>(e);
+                if (me->button() == Qt::LeftButton && win_->windowHandle()) {
+                    win_->windowHandle()->startSystemMove();
+                    return true;
+                }
+            } else if (e->type() == QEvent::MouseButtonDblClick && dbl_) {
+                dbl_();
+                return true;
+            }
+        }
+        return false;
+    }
+    QWidget* win_;
+    QWidget* title_;
+    QWidget* host_;
+    std::function<void()> dbl_;
 };
 
 // ---- logo ------------------------------------------------------------------

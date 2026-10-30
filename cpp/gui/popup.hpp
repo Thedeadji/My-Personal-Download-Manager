@@ -14,6 +14,8 @@
 
 class QLabel;
 class QCheckBox;
+class QPushButton;
+class QVBoxLayout;
 
 namespace mpdm {
 class DownloadManager;
@@ -34,12 +36,15 @@ public:
 
 protected:
     void paintEvent(QPaintEvent*) override;
-    void mousePressEvent(QMouseEvent*) override;
-    void mouseMoveEvent(QMouseEvent*) override;
 
 private:
     void buildFile();
     void buildStream();
+    // Build the frameless chrome (outer resize ring + draggable title bar with the
+    // minimize-to-background and close buttons) and return the content layout the
+    // caller fills with the body and footer. Shared by file + stream popups.
+    QVBoxLayout* buildChrome(const QString& titleText);
+    QWidget* wrapScroll(QWidget* body);  // let the body scroll when the window is shrunk
     void tick();
     void onPauseResume();
     void onStop();
@@ -51,7 +56,6 @@ private:
     bool stream_;
     const Palette* pal_;
     QTimer timer_;
-    QPoint dragPos_;
     bool openedFolder_ = false;
 
     QLabel* titleL_ = nullptr;
@@ -69,6 +73,7 @@ private:
     QLabel* noteL_ = nullptr;
     QLabel* kvResume_ = nullptr;
     QLabel* kvSaving_ = nullptr;
+    QLabel* kvLimit_ = nullptr;
     QCheckBox* openChk_ = nullptr;
 
     // stream

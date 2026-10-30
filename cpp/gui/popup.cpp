@@ -4,10 +4,12 @@
 #include <QDesktopServices>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QMouseEvent>
 #include <QPainter>
+#include <QPushButton>
+#include <QScrollArea>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include <filesystem>
 
@@ -36,6 +38,19 @@ static QLabel* lab(const QString& t, QFont f, QColor c) {
     l->setStyleSheet("color:" + c.name(QColor::HexArgb) + ";background:transparent");
     return l;
 }
+// A flat title-bar control button (matches the main window's chrome buttons).
+static QPushButton* winBtn(const QString& glyph, const Palette& P, bool danger, int fontPx) {
+    auto* b = new QPushButton(glyph);
+    b->setCursor(Qt::PointingHandCursor);
+    b->setFixedSize(40, 30);
+    b->setFocusPolicy(Qt::NoFocus);
+    QString hov = danger ? "QPushButton:hover{background:#D0452F;color:#ffffff}"
+                         : "QPushButton:hover{background:" + P.panelHi.name(QColor::HexArgb) +
+                               ";color:" + P.text.name(QColor::HexArgb) + "}";
+    b->setStyleSheet("QPushButton{background:transparent;border:0;color:" +
+                     P.text3.name(QColor::HexArgb) + ";font-size:" + QString::number(fontPx) + "px}" + hov);
+    return b;
+}
 
 PopupWindow::PopupWindow(DownloadManager* mgr, const std::string& itemId, bool stream,
                          const Palette* pal, QWidget* parent)
@@ -44,6 +59,10 @@ PopupWindow::PopupWindow(DownloadManager* mgr, const std::string& itemId, bool s
     setWindowTitle("MPDM");
     setWindowIcon(Logo::icon());
     resize(440, stream_ ? 440 : 450);
+    // Resizable (frameless): drag any edge/corner; shrinks down to this minimum,
+    // below which the body scrolls so nothing is clipped on a small screen.
+    setMinimumSize(300, 240);
+    setMouseTracking(true);
     if (stream_) buildStream(); else buildFile();
     connect(&timer_, &QTimer::timeout, this, &PopupWindow::tick);
     timer_.start(300);
@@ -56,21 +75,87 @@ std::shared_ptr<DownloadItem> PopupWindow::item() const {
     return nullptr;
 }
 
+// Put the body in a transparent, frameless scroll area so the window can be
+// resized smaller than its content without clipping (the body scrolls instead).
+QWidget* PopupWindow::wrapScroll(QWidget* body) {
+    auto* scroll = new QScrollArea;
+    scroll->setWidget(body);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->viewport()->setAutoFillBackground(false);
+    body->setAutoFillBackground(false);
+    scroll->setStyleSheet("QScrollArea{background:transparent;border:0}");
+    return scroll;
+}
+
 // ---- UI --------------------------------------------------------------------
-void PopupWindow::buildFile() {
+// Frameless chrome shared by the file + stream popups: an outer frame (its 6px
+// ring is the resize grip) wrapping the content; a draggable title bar carrying
+// the minimize-to-background (down arrowhead) and close buttons. Returns the
+// content layout to fill with the body + footer.
+QVBoxLayout* PopupWindow::buildChrome(const QString& titleText) {
     const Palette& P = *pal_;
     auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(1, 1, 1, 1); root->setSpacing(0);
+    root->setContentsMargins(0, 0, 0, 0); root->setSpacing(0);
+
+    auto* outerFrame = new QWidget;
+    outerFrame->setObjectName("popupFrame");
+    outerFrame->setStyleSheet("QWidget#popupFrame{background:" + P.frame.name(QColor::HexArgb) +
+                              ";border:1px solid " + P.bevelLight.name() + "}");
+    auto* ofl = new QVBoxLayout(outerFrame);
+    ofl->setContentsMargins(6, 6, 6, 6); ofl->setSpacing(0);
+    root->addWidget(outerFrame);
+
+    // Content holder: an explicit arrow cursor here stops the outer frame's resize
+    // cursor from being inherited by every interior widget (Qt inherits a parent's
+    // cursor), so the resize cursor only shows on the 6px ring.
+    auto* inner = new QWidget;
+    inner->setCursor(Qt::ArrowCursor);
+    auto* content = new QVBoxLayout(inner);
+    content->setContentsMargins(0, 0, 0, 0); content->setSpacing(0);
+    ofl->addWidget(inner);
 
     auto* title = new Surface(Surface::TitleBar); title->setPalette(pal_);
     title->setFixedHeight(48);
-    auto* tl = new QHBoxLayout(title); tl->setContentsMargins(14, 0, 10, 0); tl->setSpacing(10);
-    tl->addWidget(new Logo(22));
-    titleL_ = lab("Downloading", chakra(16, 600, 0.0), P.text);
+    auto* tl = new QHBoxLayout(title); tl->setContentsMargins(14, 0, 8, 0); tl->setSpacing(10);
+    auto* logo = new Logo(22); logo->setAttribute(Qt::WA_TransparentForMouseEvents);
+    tl->addWidget(logo);
+    titleL_ = lab(titleText, chakra(16, 600, 0.0), P.text);
+    titleL_->setAttribute(Qt::WA_TransparentForMouseEvents);
     tl->addWidget(titleL_); tl->addStretch(1);
-    auto* x = lab("✕", barlow(16), P.text3); x->setObjectName("xclose"); x->setCursor(Qt::PointingHandCursor);
+    // A thin divider so the three window controls read as separate buttons.
+    auto sep = [&] {
+        auto* s = new QWidget; s->setFixedSize(1, 18);
+        s->setStyleSheet("background:" + P.bevelLight.name());
+        return s;
+    };
+    auto* minN = winBtn(QString::fromUtf8("\xE2\x80\x95"), P, false, 14);  // ― normal minimize
+    minN->setToolTip("Minimize");
+    auto* minTray = winBtn(QString::fromUtf8("\xE2\x8C\x84"), P, false, 18);  // ⌄ minimize to background
+    minTray->setToolTip("Minimize to background");
+    auto* x = winBtn(QString::fromUtf8("\xE2\x9C\x95"), P, true, 14);    // ✕
+    x->setToolTip("Close (download keeps running)");
+    tl->setSpacing(6);
+    tl->addWidget(minN); tl->addWidget(sep());
+    tl->addWidget(minTray); tl->addWidget(sep());
     tl->addWidget(x);
-    root->addWidget(title);
+    content->addWidget(title);
+
+    connect(minN, &QPushButton::clicked, this, [this] { showMinimized(); });
+    // Minimize-to-background: hide the view; the download keeps running in the app
+    // (reopen from the queue row or the tray's "Open download popup").
+    connect(minTray, &QPushButton::clicked, this, [this] { hide(); });
+    connect(x, &QPushButton::clicked, this, [this] { close(); });
+
+    // Drag the title bar to move; drag the outer frame's edge ring to resize.
+    new FramelessChrome(this, title, outerFrame);
+    return content;
+}
+
+void PopupWindow::buildFile() {
+    const Palette& P = *pal_;
+    auto* root = buildChrome("Downloading");
 
     auto* body = new QWidget;
     auto* v = new QVBoxLayout(body); v->setContentsMargins(16, 14, 16, 14); v->setSpacing(12);
@@ -118,9 +203,9 @@ void PopupWindow::buildFile() {
     };
     kvSaving_ = kvRow("Saving to", P.text);
     kvResume_ = kvRow("Resume", P.green);
-    kvRow("Speed limit", P.text)->setText("—");
+    kvLimit_ = kvRow("Speed limit", P.text);
     v->addWidget(well); v->addStretch(1);
-    root->addWidget(body, 1);
+    root->addWidget(wrapScroll(body), 1);
 
     auto* footer = new Surface(Surface::TitleBar); footer->setPalette(pal_);
     footer->setFixedHeight(64);
@@ -144,18 +229,7 @@ void PopupWindow::buildFile() {
 
 void PopupWindow::buildStream() {
     const Palette& P = *pal_;
-    auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(1, 1, 1, 1); root->setSpacing(0);
-
-    auto* title = new Surface(Surface::TitleBar); title->setPalette(pal_);
-    title->setFixedHeight(48);
-    auto* tl = new QHBoxLayout(title); tl->setContentsMargins(14, 0, 10, 0); tl->setSpacing(10);
-    tl->addWidget(new Logo(22));
-    titleL_ = lab("Grabbing stream", chakra(16, 600, 0.0), P.text);
-    tl->addWidget(titleL_); tl->addStretch(1);
-    auto* x = lab("✕", barlow(16), P.text3); x->setObjectName("xclose"); x->setCursor(Qt::PointingHandCursor);
-    tl->addWidget(x);
-    root->addWidget(title);
+    auto* root = buildChrome("Grabbing stream");
 
     auto* body = new QWidget;
     auto* v = new QVBoxLayout(body); v->setContentsMargins(16, 14, 16, 14); v->setSpacing(12);
@@ -204,7 +278,7 @@ void PopupWindow::buildStream() {
     step2_ = stepRow("Download and decrypt parts", "aes-128 when encrypted");
     step3_ = stepRow("Join parts into one MP4", "ffmpeg, no re-encoding");
     v->addStretch(1);
-    root->addWidget(body, 1);
+    root->addWidget(wrapScroll(body), 1);
 
     auto* footer = new Surface(Surface::TitleBar); footer->setPalette(pal_);
     footer->setFixedHeight(64);
@@ -244,7 +318,16 @@ void PopupWindow::tick() {
         close();
         return;
     }
-    QString name = QString::fromStdString(it->filename.empty() ? it->url : it->filename);
+    // Show the download's real name. Browser jobs often arrive without a filename
+    // ("automatic"); use the resolved name once the engine knows it, falling back
+    // to the URL's last path segment so it's never the whole raw URL.
+    QString name = QString::fromStdString(it->filename);
+    if (name.isEmpty() && !it->dest_path.empty())
+        name = QString::fromStdString(fs::path(it->dest_path).filename().string());
+    if (name.isEmpty()) {
+        QString seg = QUrl(QString::fromStdString(it->url)).fileName();
+        name = seg.isEmpty() ? QString::fromStdString(it->url) : seg;
+    }
     if (nameL_) nameL_->setText(name);
     if (auto* h = findChild<QLabel*>("host")) {
         QString host = QString::fromStdString(it->url);
@@ -293,6 +376,13 @@ void PopupWindow::tick() {
         if (kvSaving_) kvSaving_->setText(QString::fromStdString(
             it->dest_path.empty() ? "—" : fs::path(it->dest_path).parent_path().string()));
         if (kvResume_) kvResume_->setText(done ? "COMPLETE" : paused ? "SAVED" : "SUPPORTED");
+        if (kvLimit_) {
+            long long per = it->max_rate_bps;             // per-download limit (0 = none)
+            double glob = mgr_ ? mgr_->global_rate_bps() : 0.0;  // manager-wide cap
+            if (per > 0) kvLimit_->setText(human((double)per) + "/s");
+            else if (glob > 0) kvLimit_->setText(human(glob) + "/s · global");
+            else kvLimit_->setText("Unlimited");
+        }
     }
 
     bool ended = done || failed;
@@ -309,23 +399,7 @@ void PopupWindow::tick() {
 // ---- window chrome ---------------------------------------------------------
 void PopupWindow::paintEvent(QPaintEvent*) {
     QPainter g(this);
-    g.fillRect(rect(), pal_->frame);
-    g.setPen(QPen(pal_->bevelLight, 1));
-    g.drawRect(rect().adjusted(0, 0, -1, -1));
-}
-void PopupWindow::mousePressEvent(QMouseEvent* e) {
-    if (e->button() == Qt::LeftButton && e->position().y() < 48) {
-        if (auto* x = findChild<QLabel*>("xclose")) {
-            QPoint lp = x->mapFromGlobal(e->globalPosition().toPoint());
-            if (x->rect().contains(lp)) { close(); return; }
-        }
-        dragPos_ = e->globalPosition().toPoint() - frameGeometry().topLeft();
-        e->accept();
-    }
-}
-void PopupWindow::mouseMoveEvent(QMouseEvent* e) {
-    if ((e->buttons() & Qt::LeftButton) && !dragPos_.isNull())
-        move(e->globalPosition().toPoint() - dragPos_);
+    g.fillRect(rect(), pal_->frame);  // behind the outer frame (seamless)
 }
 
 } // namespace mpdm::gui

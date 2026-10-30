@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QListView>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -11,18 +12,31 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
+#include <QPainter>
+#include <QPainterPath>
 #include <QSettings>
+#include <QSizePolicy>
 #include <QStyleHints>
 #include <QSystemTrayIcon>
+#include <QThread>
+#include <QWidgetAction>
+#include <QWindow>
 
-#include <algorithm>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <map>
+
+#ifdef _WIN32
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
 
 #include "popup.hpp"
 
@@ -56,13 +70,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     QSettings s;
     pal_ = paletteForMode(s.value("appearance", "dark").toString());
     setWindowIcon(Logo::icon());
+    // Frameless: the app draws its own title bar (shield + controls), per the
+    // Industrial mockup — no duplicate native OS title bar. Move/resize/maximize
+    // are provided by FramelessChrome + the title-bar buttons (see buildUi).
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
 
     // Resolution-friendly sizing: the full layout targets ~1300x860, but it must
     // also fit small screens without clipping. Open clamped to the available
     // screen area and centered; a low minimum size plus the scroll-wrapped body
     // (see buildUi) keep it usable from 800x600 up to 1920x1080 — below the
     // layout's natural size the content scrolls instead of being cut off.
-    setMinimumSize(720, 500);
+    setMinimumSize(460, 360);
     if (auto* scr = QGuiApplication::primaryScreen()) {
         const QRect av = scr->availableGeometry();
         int w = std::min(1300, (int)(av.width() * 0.96));
@@ -73,6 +91,19 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         resize(1300, 860);
     }
     manager_.start_scheduler();
+    // "Ask each time" duplicate policy: the engine (on a worker thread) asks us to
+    // decide; marshal to the GUI thread and show the dialog there.
+    manager_.set_duplicate_resolver([this](const std::string& path) -> std::string {
+        std::string result = "rename";
+        auto ask = [this, &path, &result] { result = askDuplicate(QString::fromStdString(path)).toStdString(); };
+        if (QThread::currentThread() == this->thread()) ask();
+        else QMetaObject::invokeMethod(this, ask, Qt::BlockingQueuedConnection);
+        return result;
+    });
+    // Seed already-finished items so the "download complete" dialog only fires for
+    // downloads that finish while the app is open (not for history on startup).
+    for (auto& it : manager_.ordered())
+        if (it->status == ST_COMPLETED) finishAnnounced_.insert(it->id);
     buildUi();
     applyTheme();
     setupTray();
@@ -85,11 +116,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 }
 
 void MainWindow::pollJobs() {
+    bool showPopups = QSettings().value("show_popups", true).toBool();
     for (const auto& id : manager_.ingest_jobs()) {
         bool stream = false;
         for (auto& it : manager_.ordered())
             if (it->id == id) { stream = it->stream; break; }
-        openPopupFor(id, stream);
+        if (showPopups) openPopupFor(id, stream);
     }
 }
 
@@ -120,6 +152,7 @@ void MainWindow::devShotPopup(const QString& out, bool stream) {
     if (stream) { it->seg_done = 412; it->seg_total = 980; it->size = 980; it->downloaded = 412; }
     else {
         it->size = 6228000000LL; it->downloaded = 4000000000LL; it->speed = 9800000; it->eta = 240;
+        it->max_rate_bps = 2LL * 1024 * 1024;  // 2 MB/s, to show the Speed limit row
         it->dest_path = "D:/Downloads/Programs/ubuntu-24.04.1-desktop-amd64.iso";
         SegmentProgress a; a.index = 0; a.start = 0; a.end = 100; a.downloaded = 95; a.speed_bps = 1300000; a.active = true; a.stole_from = -1;
         SegmentProgress b; b.index = 7; b.start = 700; b.end = 760; b.downloaded = 30; b.speed_bps = 1100000; b.active = true; b.stole_from = 7;
@@ -129,6 +162,19 @@ void MainWindow::devShotPopup(const QString& out, bool stream) {
     auto* pw = popups_.back();
     QTimer::singleShot(600, pw, [pw] { pw->repaint(); });
     QTimer::singleShot(900, [pw, out] { pw->grab().save(out); qApp->quit(); });
+}
+
+void MainWindow::devShotTrayMenu(const QString& out) {
+    timer_.stop(); jobTimer_.stop();
+    auto a = manager_.add("https://example.com/ubuntu-24.04.1.iso", "ubuntu-24.04.1.iso", 0, {}, false, 0, false, false);
+    a->status = ST_DOWNLOADING; a->speed = 9.4e6; a->size = 1000; a->downloaded = 650;
+    auto b = manager_.add("https://example.com/lecture.mp4", "lecture.mp4", 0, {}, false, 0, false, false);
+    b->status = ST_DOWNLOADING; b->speed = 5.1e6;
+    auto c = manager_.add("https://example.com/pack.zip", "pack.zip", 0, {}, false, 0, false, false);
+    c->status = ST_PAUSED;
+    auto* m = buildTrayMenu();
+    m->popup(QPoint(16, 16));
+    QTimer::singleShot(600, [m, out] { m->grab().save(out); qApp->quit(); });
 }
 
 void MainWindow::openPopupFor(const std::string& id, bool stream) {
@@ -152,27 +198,334 @@ void MainWindow::openPopupFor(const std::string& id, bool stream) {
     pw->activateWindow();
 }
 
+// A Lucide-style line icon, hand-painted on a 24x24 grid (matches how Logo is
+// drawn, so no Qt Svg dependency). Tinted `color`, round caps/joins.
+static QIcon trayIcon(const QString& name, const QColor& color, int sz = 18) {
+    qreal dpr = qApp->devicePixelRatio();
+    QPixmap pm(QSize(sz, sz) * dpr); pm.setDevicePixelRatio(dpr); pm.fill(Qt::transparent);
+    QPainter g(&pm);
+    g.setRenderHint(QPainter::Antialiasing, true);
+    g.scale(sz / 24.0, sz / 24.0);
+    QPen pen(color, 2); pen.setCapStyle(Qt::RoundCap); pen.setJoinStyle(Qt::RoundJoin);
+    g.setPen(pen); g.setBrush(Qt::NoBrush);
+    QPainterPath p;
+    if (name == "plus") {
+        g.drawLine(QPointF(5, 12), QPointF(19, 12));
+        g.drawLine(QPointF(12, 5), QPointF(12, 19));
+    } else if (name == "play") {
+        p.moveTo(7, 4); p.lineTo(20, 12); p.lineTo(7, 20); p.closeSubpath(); g.drawPath(p);
+    } else if (name == "pause") {
+        g.drawRoundedRect(QRectF(6.5, 4, 3.5, 16), 1.2, 1.2);
+        g.drawRoundedRect(QRectF(14, 4, 3.5, 16), 1.2, 1.2);
+    } else if (name == "power") {
+        g.drawLine(QPointF(12, 3), QPointF(12, 12));
+        g.drawArc(QRectF(4, 5, 16, 16), 120 * 16, 300 * 16);  // ring open at the top
+    } else if (name == "extlink") {
+        g.drawRoundedRect(QRectF(4, 10, 11, 10), 2, 2);
+        g.drawLine(QPointF(12, 12), QPointF(20, 4));
+        p.moveTo(14, 4); p.lineTo(20, 4); p.lineTo(20, 10); g.drawPath(p);
+    } else if (name == "download") {
+        g.drawLine(QPointF(12, 3), QPointF(12, 15));
+        p.moveTo(7, 11); p.lineTo(12, 16); p.lineTo(17, 11); g.drawPath(p);
+        g.drawLine(QPointF(5, 21), QPointF(19, 21));
+    }
+    g.end();
+    return QIcon(pm);
+}
+
+// Tray icon with a state overlay painted on the shield (per the tray design):
+// downloading -> cyan progress bar along the bottom edge; paused -> violet dot;
+// failed -> red dot; all done -> green dot; idle -> plain shield. Rendered at the
+// standard small sizes so it stays sharp at every Windows scale.
+enum { TrayIdle, TrayDownloading, TrayPaused, TrayFailed, TrayDone };
+static QIcon makeTrayIcon(int state, double frac) {
+    QIcon ic;
+    for (int sz : {16, 20, 24, 32}) {
+        QPixmap pm = Logo::pixmap(sz);
+        if (state != TrayIdle) {
+            QPainter g(&pm);
+            g.setRenderHint(QPainter::Antialiasing, true);
+            if (state == TrayDownloading) {
+                qreal barH = std::max(2.0, sz * 5.0 / 64.0);
+                g.fillRect(QRectF(0, sz - barH, sz * std::clamp(frac, 0.05, 1.0), barH), QColor("#3BE0FF"));
+            } else {
+                QColor c = state == TrayFailed ? QColor("#FF6B60")
+                         : state == TrayPaused ? QColor("#A68CFF") : QColor("#6BD66F");
+                qreal r = sz * 10.0 / 64.0;
+                g.setPen(QPen(QColor("#0C1116"), std::max(1.0, sz * 3.0 / 64.0)));
+                g.setBrush(c);
+                g.drawEllipse(QPointF(sz * 50.0 / 64.0, sz * 50.0 / 64.0), r, r);
+            }
+            g.end();
+        }
+        ic.addPixmap(pm);
+    }
+    return ic;
+}
+
+QMenu* MainWindow::buildTrayMenu() {
+    const Palette& P = *pal_;
+    auto hx = [](const QColor& c) { return c.name(QColor::HexArgb); };
+    auto* menu = new QMenu(this);
+    // Industrial styling: dark panel, 40px rows, amber hover with a left edge,
+    // inset separators (see the tray design reference).
+    menu->setStyleSheet(QString(
+        "QMenu{background:%1;border:1px solid %2;padding:6px}"
+        "QMenu::item{padding:11px 16px 11px 12px;margin:0;color:%3;background:transparent;"
+            "border-left:2px solid transparent}"
+        "QMenu::item:selected{background:%4;color:%5;border-left:2px solid %5}"
+        "QMenu::item:disabled{color:%6;background:transparent}"
+        "QMenu::separator{height:1px;background:%7;margin:5px 4px}"
+        "QMenu::icon{padding-left:8px}"
+        "QMenu::indicator{width:16px;height:16px;left:10px}"
+        "QMenu::indicator:checked{background:%5;border:1px solid %5}"
+        "QMenu::indicator:unchecked{background:%8;border:1px solid %2}")
+        .arg(hx(P.panel), hx(P.bevelLight), hx(P.text), hx(P.rowSelected),
+             hx(P.amber), hx(P.text3), hx(P.well), hx(P.well)));
+
+    // --- non-interactive status header (lamp + "N DOWNLOADING" + speed) ---
+    auto* header = new QWidget;
+    auto* hl = new QHBoxLayout(header); hl->setContentsMargins(10, 6, 12, 8); hl->setSpacing(8);
+    auto* lamp = new QLabel; lamp->setFixedSize(7, 7);
+    auto* hText = new QLabel("IDLE"); hText->setFont(mono(11));
+    auto* hSpeed = new QLabel; hSpeed->setFont(mono(11));
+    hl->addWidget(lamp); hl->addWidget(hText); hl->addStretch(1); hl->addWidget(hSpeed);
+    auto* headerAct = new QWidgetAction(menu); headerAct->setDefaultWidget(header);
+    headerAct->setEnabled(false);
+    menu->addAction(headerAct);
+
+    // --- items ---
+    // Top item: open the live download popup(s). Keeps the amber "open" icon.
+    // (Opening the app itself now lives on the left-click quick panel's Open button.)
+    auto* openAct = menu->addAction(trayIcon("extlink", P.amber), "Open download popup", this,
+                                    [this] { showDownloadPopups(); });
+    { QFont f = openAct->font(); f.setWeight(QFont::Medium); openAct->setFont(f); }
+    menu->addAction(trayIcon("plus", P.text2), "Add downloads…", this, [this] { showFromTray(); onAdd(); });
+    menu->addSeparator();
+    auto* resumeAct = menu->addAction(trayIcon("play", P.text2), "Resume all", this,
+                                      [this] { manager_.resume_all(); refresh(); });
+    auto* pauseAct = menu->addAction(trayIcon("pause", P.text2), "Pause all", this,
+                                     [this] { manager_.pause_all(); refresh(); });
+    menu->addSeparator();
+    menu->addAction(trayIcon("power", P.red), "Exit MPDM", this, [this] { quitApp(); });
+
+    // Refresh the live header + hints each time the menu opens.
+    connect(menu, &QMenu::aboutToShow, this, [this, lamp, hText, hSpeed, resumeAct, pauseAct, hx] {
+        int running = 0, paused = 0; double spd = 0;
+        for (auto& it : manager_.ordered()) {
+            if (it->status == ST_DOWNLOADING) { running++; spd += it->speed; }
+            else if (it->status == ST_PAUSED) paused++;
+        }
+        const Palette& Pp = *pal_;
+        lamp->setStyleSheet(QString("background:%1;border-radius:3px")
+                                .arg(hx(running ? Pp.cyan : Pp.text3)));
+        hText->setText(running ? QString("%1 DOWNLOADING").arg(running) : "IDLE");
+        hText->setStyleSheet("color:" + hx(Pp.text2) + ";background:transparent");
+        hSpeed->setText(running ? human(spd) + "/s" : "");
+        hSpeed->setStyleSheet("color:" + hx(Pp.cyan) + ";background:transparent");
+        resumeAct->setText(paused ? QString("Resume all\t%1 PAUSED").arg(paused) : "Resume all");
+        pauseAct->setText(running ? QString("Pause all\t%1 RUNNING").arg(running) : "Pause all");
+    });
+    return menu;
+}
+
+void MainWindow::devShotTrayIcons(const QString& out) {
+    const int states[] = {TrayIdle, TrayDownloading, TrayPaused, TrayFailed, TrayDone};
+    const int n = 5, sz = 64, pad = 12;
+    QPixmap strip((sz + pad) * n + pad, sz + 2 * pad);
+    strip.fill(QColor("#15191E"));
+    QPainter g(&strip);
+    for (int i = 0; i < n; ++i)
+        g.drawPixmap(pad + i * (sz + pad), pad, makeTrayIcon(states[i], 0.66).pixmap(sz, sz));
+    g.end();
+    strip.save(out);
+    qApp->quit();
+}
+
+void MainWindow::devShotQuickPanel(const QString& out) {
+    timer_.stop(); jobTimer_.stop();
+    auto a = manager_.add("https://example.com/ubuntu-24.04.1.iso", "ubuntu-24.04.1-desktop-amd64.iso", 0, {}, false, 0, false, false);
+    a->status = ST_DOWNLOADING; a->speed = 9.4e6; a->size = 1000; a->downloaded = 650;
+    auto b = manager_.add("https://example.com/lecture-07.mp4", "lecture-07-distributed-systems.mp4", 0, {}, false, 0, false, true);
+    b->status = ST_DOWNLOADING; b->speed = 3.1e6; b->size = 1000; b->downloaded = 420;
+    auto c = manager_.add("https://example.com/interview.mov", "interview-raw-take2.mov", 0, {}, false, 0, false, false);
+    c->status = ST_PAUSED; c->size = 1000; c->downloaded = 180;
+    showQuickPanel();
+    if (quickPanel_) quickPanel_->grab().save(out);
+    qApp->quit();
+}
+
+void MainWindow::showQuickPanel() {
+    const Palette& P = *pal_;
+    if (quickPanel_) { quickPanel_->close(); quickPanel_ = nullptr; }
+    auto hx = [](const QColor& c) { return c.name(QColor::HexArgb); };
+    auto lab = [](const QString& t, QFont f, QColor c) {
+        auto* l = new QLabel(t); l->setFont(f);
+        l->setStyleSheet("color:" + c.name(QColor::HexArgb) + ";background:transparent");
+        return l;
+    };
+    auto itemById = [this](const std::string& id) -> std::shared_ptr<DownloadItem> {
+        for (auto& it : manager_.ordered()) if (it->id == id) return it;
+        return nullptr;
+    };
+
+    auto* panel = new QWidget(nullptr, Qt::Popup | Qt::FramelessWindowHint);
+    panel->setAttribute(Qt::WA_DeleteOnClose, true);
+    { QPalette pp = panel->palette(); pp.setColor(QPalette::Window, P.frame); panel->setPalette(pp); }
+    panel->setAutoFillBackground(true);
+    panel->setFixedWidth(380);
+    connect(panel, &QObject::destroyed, this, [this] { quickPanel_ = nullptr; });
+    auto* v = new QVBoxLayout(panel); v->setContentsMargins(6, 6, 6, 6); v->setSpacing(6);
+
+    auto updaters = std::make_shared<std::vector<std::function<void()>>>();
+
+    // ---- header: logo, status counts, total speed ----
+    auto* header = new Surface(Surface::TitleBar); header->setPalette(&P);
+    auto* hl = new QHBoxLayout(header); hl->setContentsMargins(12, 10, 12, 10); hl->setSpacing(10);
+    hl->addWidget(new Logo(22));
+    auto* hcol = new QVBoxLayout; hcol->setSpacing(1);
+    hcol->addWidget(lab("MPDM", chakra(14, 600, 0.0), P.text));
+    auto* hStatus = lab("", mono(11), P.text2); hcol->addWidget(hStatus);
+    hl->addLayout(hcol, 1);
+    auto* scol = new QVBoxLayout; scol->setSpacing(1);
+    auto* hSpeed = lab("0", mono(18, 500), P.cyan); hSpeed->setAlignment(Qt::AlignRight);
+    scol->addWidget(hSpeed);
+    scol->addWidget(lab("MB/s", mono(11), P.text3), 0, Qt::AlignRight);
+    hl->addLayout(scol);
+    v->addWidget(header);
+
+    // ---- active downloads list ----
+    auto items = manager_.ordered();
+    std::vector<std::shared_ptr<DownloadItem>> active;
+    for (auto& it : items)
+        if (it->status != ST_COMPLETED) active.push_back(it);
+
+    auto* listPanel = new Surface(Surface::Panel); listPanel->setPalette(&P);
+    auto* ll = new QVBoxLayout(listPanel); ll->setContentsMargins(6, 6, 6, 6); ll->setSpacing(2);
+    if (active.empty()) {
+        ll->addWidget(lab("No active downloads", barlow(13), P.text3));
+    }
+    int shown = 0;
+    for (auto& it : active) {
+        if (shown++ >= 5) break;
+        std::string id = it->id;
+        auto* row = new QWidget;
+        auto* rl = new QHBoxLayout(row); rl->setContentsMargins(6, 6, 4, 6); rl->setSpacing(10);
+        auto* iconW = new Surface(Surface::Well); iconW->setPalette(&P); iconW->setFixedSize(28, 28);
+        auto* iwl = new QHBoxLayout(iconW); iwl->setContentsMargins(0, 0, 0, 0);
+        iwl->addWidget(lab(it->stream ? "▤" : "▣", mono(13), P.amber), 0, Qt::AlignCenter);
+        rl->addWidget(iconW);
+        auto* tcol = new QVBoxLayout; tcol->setSpacing(4);
+        auto* name = lab(QString::fromStdString(it->filename.empty() ? it->url : it->filename), barlow(13), P.text);
+        name->setMinimumWidth(0);
+        tcol->addWidget(name);
+        auto* mrow = new QHBoxLayout; mrow->setSpacing(8);
+        auto* meter = new LedMeter(16, 4, 6, 1); meter->setPalette(&P);
+        auto* pct = lab("0%", mono(11), P.text2);
+        auto* spd = lab("", mono(11), P.cyan);
+        mrow->addWidget(meter); mrow->addWidget(pct); mrow->addStretch(1); mrow->addWidget(spd);
+        tcol->addLayout(mrow);
+        rl->addLayout(tcol, 1);
+        auto* pbtn = new QPushButton; pbtn->setFixedSize(36, 36); pbtn->setCursor(Qt::PointingHandCursor);
+        pbtn->setFocusPolicy(Qt::NoFocus);
+        pbtn->setStyleSheet("QPushButton{background:" + hx(P.panelHi) + ";border:0;color:" + hx(P.text2) +
+                            ";font-size:14px}QPushButton:hover{color:" + hx(P.text) + "}");
+        rl->addWidget(pbtn);
+        ll->addWidget(row);
+
+        auto refreshRow = [=]() {
+            auto d = itemById(id);
+            if (!d) return;
+            bool done = d->status == ST_COMPLETED, paused = d->status == ST_PAUSED;
+            int p = d->percent() ? (int)(*d->percent() + 0.5) : (done ? 100 : 0);
+            meter->set(p / 100.0, done ? P.green : paused ? P.violet : P.cyan);
+            pct->setText(QString("%1%").arg(p));
+            spd->setText(d->status == ST_DOWNLOADING ? human(d->speed) + "/s" : "");
+            pbtn->setText(QString::fromUtf8(paused ? "\xE2\x96\xB6" : "\xE2\x8F\xB8"));  // ▶ resume / ⏸ pause
+        };
+        connect(pbtn, &QPushButton::clicked, this, [=] {
+            auto d = itemById(id);
+            if (!d) return;
+            if (d->status == ST_PAUSED) manager_.resume(id); else manager_.pause(id);
+            refresh();
+            refreshRow();
+        });
+        refreshRow();
+        updaters->push_back(refreshRow);
+    }
+    // "See all N in MPDM"
+    auto* seeAll = new QPushButton(QString("See all %1 in MPDM").arg((int)items.size()));
+    seeAll->setCursor(Qt::PointingHandCursor); seeAll->setFocusPolicy(Qt::NoFocus);
+    seeAll->setStyleSheet("QPushButton{background:transparent;border:0;color:" + hx(P.amber) +
+                          ";font-family:'Chakra Petch';font-weight:600;text-align:left;padding:6px}"
+                          "QPushButton:hover{color:" + hx(P.text) + "}");
+    connect(seeAll, &QPushButton::clicked, this, [this, panel] { panel->close(); showFromTray(); });
+    ll->addWidget(seeAll, 0, Qt::AlignLeft);
+    v->addWidget(listPanel);
+
+    // ---- footer: Add / Pause all / Open ----
+    auto* footer = new Surface(Surface::TitleBar); footer->setPalette(&P);
+    auto* fl = new QHBoxLayout(footer); fl->setContentsMargins(6, 6, 6, 6); fl->setSpacing(6);
+    auto* addB = new IndBtn("Add", true); addB->setPalette(&P);
+    auto* pauseAllB = new IndBtn("Pause all"); pauseAllB->setPalette(&P);
+    auto* openB = new IndBtn("Open"); openB->setPalette(&P);
+    fl->addWidget(addB, 1); fl->addWidget(pauseAllB, 1); fl->addWidget(openB, 1);
+    v->addWidget(footer);
+    connect(addB, &QAbstractButton::clicked, this, [this, panel] { panel->close(); showFromTray(); onAdd(); });
+    connect(pauseAllB, &QAbstractButton::clicked, this, [this] { manager_.pause_all(); refresh(); });
+    connect(openB, &QAbstractButton::clicked, this, [this, panel] { panel->close(); showFromTray(); });
+
+    // header + rows live-update while the panel is open
+    auto headerUpd = [=] {
+        int running = 0, queued = 0, paused = 0; double spd = 0;
+        for (auto& it : manager_.ordered()) {
+            if (it->status == ST_DOWNLOADING) { running++; spd += it->speed; }
+            else if (it->status == ST_QUEUED) queued++;
+            else if (it->status == ST_PAUSED) paused++;
+        }
+        hStatus->setText(QString("%1 RUNNING, %2 QUEUED, %3 PAUSED").arg(running).arg(queued).arg(paused));
+        hSpeed->setText(QString::number(spd / 1048576.0, 'f', 1));
+    };
+    headerUpd();
+    auto* t = new QTimer(panel);
+    connect(t, &QTimer::timeout, panel, [headerUpd, updaters] {
+        headerUpd();
+        for (auto& f : *updaters) f();
+    });
+    t->start(400);
+
+    // position above the tray icon (fall back to the screen corner)
+    panel->adjustSize();
+    int w = panel->width(), h = panel->sizeHint().height();
+    QScreen* scr = QGuiApplication::primaryScreen();
+    QRect av = scr ? scr->availableGeometry() : QRect(0, 0, 1280, 720);
+    QRect tg = tray_ ? tray_->geometry() : QRect();
+    QPoint pos = tg.isEmpty() ? QPoint(av.right() - w - 12, av.bottom() - h - 12)
+                              : QPoint(tg.center().x() - w / 2, tg.top() - h - 8);
+    pos.setX(std::clamp(pos.x(), av.left() + 4, av.right() - w - 4));
+    pos.setY(std::clamp(pos.y(), av.top() + 4, av.bottom() - h - 4));
+    panel->move(pos);
+    panel->show();
+    panel->activateWindow();
+    quickPanel_ = panel;
+}
+
 void MainWindow::setupTray() {
     if (!QSystemTrayIcon::isSystemTrayAvailable()) return;  // no tray -> close quits normally
     tray_ = new QSystemTrayIcon(Logo::icon(), this);
     tray_->setToolTip("MyPersonalDownloadManager");
 
-    auto* menu = new QMenu(this);
-    menu->addAction("Open MPDM", this, [this] { showFromTray(); });
-    menu->addSeparator();
-    menu->addAction("Resume all", this, [this] { manager_.resume_all(); refresh(); });
-    menu->addAction("Pause all", this, [this] { manager_.pause_all(); refresh(); });
-    menu->addSeparator();
-    menu->addAction("Exit", this, [this] { quitApp(); });
-    tray_->setContextMenu(menu);
+    trayMenu_ = buildTrayMenu();
+    tray_->setContextMenu(trayMenu_);
 
-    // Left-click (trigger) or double-click restores the window.
+    // Left-click opens the quick panel; double-click restores the window.
     connect(tray_, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason r) {
-        if (r == QSystemTrayIcon::Trigger || r == QSystemTrayIcon::DoubleClick) showFromTray();
+        if (r == QSystemTrayIcon::Trigger) showQuickPanel();
+        else if (r == QSystemTrayIcon::DoubleClick) showFromTray();
     });
     tray_->show();
     // With a tray, the app lives on after the window is hidden; only the tray
-    // "Exit" action (quitApp) ends it.
+    // "Exit MPDM" action (quitApp) ends it.
     qApp->setQuitOnLastWindowClosed(false);
 }
 
@@ -180,12 +533,74 @@ void MainWindow::showFromTray() {
     showNormal();
     raise();
     activateWindow();
+    trayDoneSeen_ = true;  // opening MPDM clears the "all done" badge
+}
+
+void MainWindow::showDownloadPopups() {
+    // Open (or raise, if already open) the live popup for each current download so
+    // the user can watch them from the tray. openPopupFor de-dupes and raises.
+    int opened = 0;
+    for (auto& it : manager_.ordered()) {
+        if (it->status == ST_DOWNLOADING || it->status == ST_QUEUED || it->status == ST_PAUSED) {
+            openPopupFor(it->id, it->stream);
+            ++opened;
+        }
+    }
+    if (opened == 0 && tray_)
+        tray_->showMessage("MyPersonalDownloadManager", "No active downloads.",
+                           Logo::icon(), 3000);
 }
 
 void MainWindow::quitApp() {
     allowQuit_ = true;
     if (tray_) tray_->hide();
     qApp->quit();
+}
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result) {
+#ifdef _WIN32
+    if (auto* msg = static_cast<MSG*>(message)) {
+        // The installer's Restart Manager and a Windows shutdown/logoff both ask
+        // us to close via WM_QUERYENDSESSION/WM_ENDSESSION (not the window's X).
+        // Flip allowQuit_ so the pending close really quits instead of hiding to
+        // the tray — otherwise a silent update hangs waiting for us to exit.
+        if (msg->message == WM_QUERYENDSESSION || msg->message == WM_ENDSESSION) {
+            allowQuit_ = true;
+            if (tray_) tray_->hide();
+        }
+        // Frameless windows otherwise maximize over the taskbar; clamp the
+        // maximized size/position to the screen's work area.
+        if (msg->message == WM_GETMINMAXINFO) {
+            if (QScreen* scr = screen()) {
+                auto* mmi = reinterpret_cast<MINMAXINFO*>(msg->lParam);
+                const QRect av = scr->availableGeometry();
+                const QRect sg = scr->geometry();
+                const qreal dpr = scr->devicePixelRatio();
+                mmi->ptMaxPosition.x = qRound((av.x() - sg.x()) * dpr);
+                mmi->ptMaxPosition.y = qRound((av.y() - sg.y()) * dpr);
+                mmi->ptMaxSize.x = qRound(av.width() * dpr);
+                mmi->ptMaxSize.y = qRound(av.height() * dpr);
+                mmi->ptMaxTrackSize = mmi->ptMaxSize;
+                mmi->ptMinTrackSize.x = qRound(minimumWidth() * dpr);
+                mmi->ptMinTrackSize.y = qRound(minimumHeight() * dpr);
+                if (result) *result = 0;
+                return true;
+            }
+        }
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+void MainWindow::toggleMaximize() {
+    if (isMaximized()) showNormal();
+    else showMaximized();
+}
+
+void MainWindow::changeEvent(QEvent* ev) {
+    if (ev->type() == QEvent::WindowStateChange && maxBtn_)
+        maxBtn_->setText(QString::fromUtf8(isMaximized() ? "\xE2\x9D\x90" : "\xE2\x96\xA1"));  // ❐ / □
+    QMainWindow::changeEvent(ev);
 }
 
 void MainWindow::closeEvent(QCloseEvent* ev) {
@@ -245,6 +660,11 @@ void MainWindow::buildUi() {
     themed_.clear();  // rebuildable (theme switch re-runs buildUi)
     auto* central = new QWidget;
     central->setAutoFillBackground(true);
+    // Frameless resize cursors are set on the outer frame; a Qt widget without an
+    // explicit cursor inherits its parent's, so that resize cursor would otherwise
+    // leak onto every interior widget. Pin the content root to an arrow so only the
+    // 6px outer ring shows resize cursors (buttons/inputs keep their own).
+    central->setCursor(Qt::ArrowCursor);
     QPalette cpal = central->palette();
     cpal.setColor(QPalette::Window, P.frame);
     central->setPalette(cpal);
@@ -259,22 +679,71 @@ void MainWindow::buildUi() {
     bodyScroll->setStyleSheet("QScrollArea{border:0;background:" + P.frame.name(QColor::HexArgb) + "}");
     bodyScroll->viewport()->setAutoFillBackground(true);
     { QPalette vp = bodyScroll->viewport()->palette(); vp.setColor(QPalette::Window, P.frame); bodyScroll->viewport()->setPalette(vp); }
-    setCentralWidget(bodyScroll);
+    // Outer frame: a 6px ring around the scroll area that always sits at the window
+    // edge (even when the body scrolls), so the frameless resize grips never move.
+    auto* outerFrame = new QWidget;
+    outerFrame->setAutoFillBackground(true);
+    { QPalette op = outerFrame->palette(); op.setColor(QPalette::Window, P.frame); outerFrame->setPalette(op); }
+    auto* ofl = new QVBoxLayout(outerFrame);
+    ofl->setContentsMargins(6, 6, 6, 6);
+    ofl->setSpacing(6);
+    ofl->addWidget(bodyScroll);
+    setCentralWidget(outerFrame);
     auto* root = new QVBoxLayout(central);
-    root->setContentsMargins(6, 6, 6, 6);
+    root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(6);
 
-    // ---- title bar ----
+    // ---- title bar (frameless: also carries the window controls) ----
     auto* title = surf(Surface::TitleBar);
     title->setFixedHeight(44);
     auto* tl = new QHBoxLayout(title);
     tl->setContentsMargins(12, 0, 6, 0);
     tl->setSpacing(10);
-    tl->addWidget(new Logo(22));
-    tl->addWidget(lab("MyPersonalDownloadManager", chakra(15, 600, 0.0), P.text));
-    tl->addWidget(label2("Download control", P.text3));
+    // Branding is click-through so a press anywhere on the bar starts a window drag.
+    auto* logo = new Logo(22); logo->setAttribute(Qt::WA_TransparentForMouseEvents);
+    tl->addWidget(logo);
+    auto* nameL = lab("MyPersonalDownloadManager", chakra(15, 600, 0.0), P.text);
+    nameL->setAttribute(Qt::WA_TransparentForMouseEvents);
+    tl->addWidget(nameL);
+    auto* ctrlL = label2("Download control", P.text3);
+    ctrlL->setAttribute(Qt::WA_TransparentForMouseEvents);
+    tl->addWidget(ctrlL);
     tl->addStretch(1);
-    root->addWidget(title);
+    // minimize / maximize-restore / close
+    auto winBtn = [&](const QString& glyph, bool danger) {
+        auto* b = new QPushButton(glyph);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(42, 30);
+        b->setFocusPolicy(Qt::NoFocus);
+        QString hov = danger ? "QPushButton:hover{background:#D0452F;color:#ffffff}"
+                             : "QPushButton:hover{background:" + P.panelHi.name(QColor::HexArgb) +
+                                   ";color:" + P.text.name(QColor::HexArgb) + "}";
+        b->setStyleSheet("QPushButton{background:transparent;border:0;color:" +
+                         P.text3.name(QColor::HexArgb) + ";font-size:13px}" + hov);
+        return b;
+    };
+    auto* minBtn = winBtn(QString::fromUtf8("\xE2\x80\x95"), false);   // ―
+    minBtn->setToolTip("Minimize");
+    maxBtn_ = winBtn(QString::fromUtf8(isMaximized() ? "\xE2\x9D\x90" : "\xE2\x96\xA1"), false);  // ❐ / □
+    maxBtn_->setToolTip("Maximize");
+    auto* clsBtn = winBtn(QString::fromUtf8("\xE2\x9C\x95"), true);    // ✕
+    clsBtn->setToolTip("Close (keeps running in the tray)");
+    connect(minBtn, &QPushButton::clicked, this, [this] { showMinimized(); });
+    connect(maxBtn_, &QPushButton::clicked, this, [this] { toggleMaximize(); });
+    connect(clsBtn, &QPushButton::clicked, this, [this] { close(); });
+    tl->addWidget(minBtn); tl->addWidget(maxBtn_); tl->addWidget(clsBtn);
+    // The title bar sits in the outer frame (above the scroll area), so the window
+    // controls stay full-width and reachable even when the body scrolls at small
+    // window sizes. Let the long name shrink so the controls never get pushed off.
+    nameL->setMinimumWidth(0);
+    nameL->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    ctrlL->setMinimumWidth(0);
+    ctrlL->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    ofl->insertWidget(0, title);
+
+    // Frameless move/resize: drag the title bar; resize from the outer frame's
+    // 6px ring (always at the window edge, even while the body scrolls).
+    new FramelessChrome(this, title, outerFrame, [this] { toggleMaximize(); });
 
     // ---- readout tiles ----
     auto* tiles = new QHBoxLayout;
@@ -328,8 +797,9 @@ void MainWindow::buildUi() {
     };
     actionBtn("Resume", [this] { if (!selId_.isEmpty()) { manager_.resume(selId_.toStdString()); refresh(); } });
     actionBtn("Pause", [this] { if (!selId_.isEmpty()) { manager_.pause(selId_.toStdString()); refresh(); } });
-    actionBtn("Stop", [this] { if (!selId_.isEmpty()) { manager_.pause(selId_.toStdString()); refresh(); } });
-    actionBtn("Remove", [this] { if (!selId_.isEmpty()) { manager_.remove(selId_.toStdString(), false); refresh(); } });
+    actionBtn("Pause all", [this] { manager_.pause_all(); refresh(); });
+    actionBtn("Remove", [this] { onRemove(); });
+    actionBtn("Clear done", [this] { onClearDone(); });
     tb->addWidget(divider());
     actionBtn("Scheduler", [this] { openScheduler(); });
     actionBtn("Settings", [this] { openSettings(); });
@@ -346,6 +816,7 @@ void MainWindow::buildUi() {
     tb->addWidget(searchWell);
     tb->addWidget(label2("Limit", P.text3));
     auto* lim = new QComboBox;
+    lim->setView(new QListView(lim));
     lim->addItems({"UNLIMITED", "500 KB/s", "1 MB/s", "2 MB/s", "5 MB/s"});
     lim->setFont(mono(11));
     lim->setStyleSheet(QString("QComboBox{background:%1;color:%2;border:0;padding:0 10px;min-height:44px}")
@@ -369,9 +840,20 @@ void MainWindow::buildUi() {
     cv->setContentsMargins(12, 10, 12, 12);
     cv->setSpacing(8);
     cv->addWidget(label2("Categories", P.text3));
-    catsLay_ = new QGridLayout;
-    catsLay_->setSpacing(6);
-    cv->addLayout(catsLay_);
+    catsLay_ = nullptr;  // (was a tile grid; replaced by a compact dropdown)
+    auto* catCombo = new QComboBox;
+    catCombo->setView(new QListView(catCombo));
+    catCombo->addItems({"All", "Video", "Audio", "Docs", "Archive", "Apps", "Other", "Private"});
+    catCombo->setCurrentText(catFilter_);
+    catCombo->setStyleSheet(
+        QString("QComboBox{background:%1;color:%2;border:1px solid %3;padding:5px 10px;min-height:30px}"
+                "QComboBox::drop-down{border:0;width:18px}"
+                "QComboBox::down-arrow{image:none;border-left:4px solid transparent;"
+                "border-right:4px solid transparent;border-top:5px solid %4;margin-right:7px}")
+            .arg(P.well.name(QColor::HexArgb), P.text.name(QColor::HexArgb),
+                 (P.dark ? P.bevelLight : P.bevelDark).name(QColor::HexArgb), P.text2.name(QColor::HexArgb)));
+    connect(catCombo, &QComboBox::currentTextChanged, this, [this](const QString& t) { catFilter_ = t; refresh(); });
+    cv->addWidget(catCombo);
     aside->addWidget(catPanel);
     auto* statusPanel = surf(Surface::Panel);
     auto* sv = new QVBoxLayout(statusPanel);
@@ -411,10 +893,6 @@ void MainWindow::buildUi() {
     auto* pk = lab("PEAK 0", mono(11), P.text3); pk->setObjectName("t_peak"); thh->addWidget(pk);
     auto* du = lab("", mono(11), P.text3); du->setObjectName("t_diskfree"); thh->addWidget(du);
     thh->addStretch(1);
-    for (auto r : {"1M", "10M", "1H", "10H"}) {
-        auto* b = lab(r, mono(11), QString(r) == "10M" ? P.text : P.text3);
-        thh->addWidget(b);
-    }
     thv->addLayout(thh);
     graph_ = themed(new Graph);
     thv->addWidget(graph_);
@@ -553,10 +1031,22 @@ void MainWindow::buildUi() {
 }
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* ev) {
-    if (ev->type() == QEvent::MouseButtonPress) {
+    if (ev->type() == QEvent::MouseButtonPress || ev->type() == QEvent::MouseButtonDblClick) {
         if (auto* w = qobject_cast<QWidget*>(obj)) {
             QVariant id = w->property("mpdmId");
-            if (id.isValid()) { selId_ = id.toString(); refresh(); return false; }
+            if (id.isValid()) {
+                selId_ = id.toString();
+                // Double-click (re)opens the item's live popup — the restore path
+                // for a popup the user minimized to the tray.
+                if (ev->type() == QEvent::MouseButtonDblClick) {
+                    bool stream = false;
+                    for (auto& it : manager_.ordered())
+                        if (QString::fromStdString(it->id) == selId_) { stream = it->stream; break; }
+                    openPopupFor(selId_.toStdString(), stream);
+                }
+                refresh();
+                return false;
+            }
         }
     }
     return QMainWindow::eventFilter(obj, ev);
@@ -571,7 +1061,29 @@ void MainWindow::onAdd() {
     bool ok = false;
     QString t = QInputDialog::getMultiLineText(this, "Add downloads",
         "One link per line (ranges like [1-100] expand):", "", &ok);
-    if (ok && !t.trimmed().isEmpty()) { manager_.add_batch(t.toStdString()); refresh(); }
+    if (ok && !t.trimmed().isEmpty()) {
+        bool autostart = QSettings().value("autostart", true).toBool();
+        auto added = manager_.add_batch(t.toStdString(), 0, autostart);
+        refresh();
+        // Open the same live, app-owned download popup the browser extension uses,
+        // so both entry points behave identically (one in-app popup per download,
+        // never a separate running app). A pasted wildcard batch (e.g. [1-100])
+        // would flood the screen, so only auto-open for a handful; the rest stay
+        // visible in the queue. The tray's "Show download popups" toggle gates this.
+        if (QSettings().value("show_popups", true).toBool() && added.size() <= 8)
+            for (auto& it : added)
+                if (it) openPopupFor(it->id, it->stream);
+    }
+}
+
+void MainWindow::onClearDone() {
+    manager_.clear_finished();
+    // Drop announce-state for items that are gone so the ids can be reused cleanly.
+    std::set<std::string> live;
+    for (auto& it : manager_.ordered()) live.insert(it->id);
+    for (auto i = finishAnnounced_.begin(); i != finishAnnounced_.end();)
+        i = live.count(*i) ? std::next(i) : finishAnnounced_.erase(i);
+    refresh();
 }
 
 void MainWindow::refresh() {
@@ -580,11 +1092,22 @@ void MainWindow::refresh() {
     auto setText = [&](const char* id, const QString& t) { if (auto* l = findChild<QLabel*>(id)) l->setText(t); };
 
     double g = 0; int active = 0; long long dl = 0; int fin = 0;
-    for (auto& it : items) { if (it->status == ST_DOWNLOADING) { g += it->speed; active++; } dl += it->downloaded; if (it->status == ST_COMPLETED) fin++; }
+    int paused = 0, queued = 0, failed = 0; long long dsum = 0, ssum = 0;
+    for (auto& it : items) {
+        if (it->status == ST_DOWNLOADING) {
+            g += it->speed; active++;
+            dsum += it->downloaded; if (it->size) ssum += *it->size;
+        } else if (it->status == ST_PAUSED) paused++;
+        else if (it->status == ST_QUEUED) queued++;
+        else if (it->status == ST_ERROR) failed++;
+        dl += it->downloaded;
+        if (it->status == ST_COMPLETED) fin++;
+    }
     int mc = manager_.max_concurrent;
 
+    bool newlyFinished = fin > lastFinished_;
     // Notify from the tray when a download finishes while minimized.
-    if (tray_ && fin > lastFinished_ && isHidden()) {
+    if (tray_ && newlyFinished && isHidden()) {
         int done = fin - lastFinished_;
         tray_->showMessage("Download complete",
                            done == 1 ? QString("1 download finished.")
@@ -592,6 +1115,42 @@ void MainWindow::refresh() {
                            Logo::icon(), 4000);
     }
     lastFinished_ = fin;
+
+    // Tray icon reflects overall state. A new completion re-arms the green "all
+    // done" badge; opening the window clears it.
+    if (tray_) {
+        if (!isHidden()) trayDoneSeen_ = true;
+        if (newlyFinished) trayDoneSeen_ = false;
+        int st = active > 0 ? TrayDownloading
+               : failed > 0 ? TrayFailed
+               : paused > 0 ? TrayPaused
+               : (fin > 0 && queued == 0 && !trayDoneSeen_) ? TrayDone
+               : TrayIdle;
+        double frac = ssum > 0 ? (double)dsum / (double)ssum : 0.0;
+        double nowt = mono_seconds();
+        bool stateChanged = st != trayState_;
+        bool fracChanged = st == TrayDownloading && std::abs(frac - trayFrac_) >= 0.01;
+        if (stateChanged || (fracChanged && nowt - trayIconAt_ >= 1.0)) {
+            trayState_ = st; trayFrac_ = frac; trayIconAt_ = nowt;
+            tray_->setIcon(makeTrayIcon(st, frac));
+        }
+    }
+
+    // IDM-style "download complete" dialog for each newly-finished item (opt-out
+    // via the dialog's checkbox / Settings). Seeded in the ctor so it never fires
+    // for downloads already finished when the app opened.
+    if (QSettings().value("finish_popup", true).toBool()) {
+        for (auto& it : items) {
+            if (it->status != ST_COMPLETED || finishAnnounced_.count(it->id)) continue;
+            finishAnnounced_.insert(it->id);
+            // The live popup (if any) is replaced by the completion dialog.
+            for (auto* p : popups_) if (p && p->itemId() == it->id) p->close();
+            showFinishDialog(it);
+        }
+    } else {
+        for (auto& it : items) if (it->status == ST_COMPLETED) finishAnnounced_.insert(it->id);
+    }
+
     setText("s_speed", QString::number(g / 1048576.0, 'f', 1));
     setText("s_slots", QString("%1/%2").arg(active).arg(mc));
     { QString hd = human((double)dl); int sp = 0; while (sp < hd.size() && (hd[sp].isDigit() || hd[sp] == '.')) sp++;
@@ -641,30 +1200,6 @@ void MainWindow::refresh() {
         }
     }
 
-    // categories
-    if (catsLay_) {
-        clearLayout(catsLay_);
-        std::map<std::string, int> cc;
-        for (auto& it : items) cc[it->category()]++;
-        struct C { const char* name; int n; };
-        C cats[] = {{"All", (int)items.size()}, {"Video", cc["Video"]}, {"Audio", cc["Audio"]},
-                    {"Docs", cc["Documents"]}, {"Archive", cc["Archives"]}, {"Apps", cc["Programs"]},
-                    {"Other", cc["Other"]}, {"Private", 0}};
-        for (int i = 0; i < 8; ++i) {
-            bool on = i == 0;
-            auto* slot = new QLabel;
-            slot->setFixedHeight(58);
-            slot->setAlignment(Qt::AlignCenter);
-            slot->setText(QString(cats[i].name).toUpper() + (cats[i].n ? QString("  %1").arg(cats[i].n) : ""));
-            slot->setFont(chakra(10, 600, 0.08));
-            slot->setStyleSheet(QString("background:%1;color:%2;border:1px solid %3")
-                                    .arg(P.well.name(QColor::HexArgb),
-                                         (on ? P.amber : P.text2).name(QColor::HexArgb),
-                                         (on ? P.amber.name() : "transparent")));
-            catsLay_->addWidget(slot, i / 3, i % 3);
-        }
-    }
-
     // status list
     if (statusLay_) {
         clearLayout(statusLay_);
@@ -685,12 +1220,26 @@ void MainWindow::refresh() {
         }
     }
 
-    // queue rows
+    // queue rows (filtered by the Categories dropdown)
     if (rowsLay_) {
         clearLayout(rowsLay_);
+        std::vector<std::shared_ptr<DownloadItem>> shown;
+        for (auto& it : items) {
+            bool keep = true;
+            if (catFilter_ == "All") keep = true;
+            else if (catFilter_ == "Private") keep = it->incognito;
+            else {
+                std::string want = catFilter_ == "Docs"      ? "Documents"
+                                   : catFilter_ == "Archive"  ? "Archives"
+                                   : catFilter_ == "Apps"     ? "Programs"
+                                                              : catFilter_.toStdString();
+                keep = !it->incognito && it->category() == want;
+            }
+            if (keep) shown.push_back(it);
+        }
         int idx = 0;
         std::shared_ptr<DownloadItem> sel;
-        for (auto& it : items) {
+        for (auto& it : shown) {
             bool isSel = QString::fromStdString(it->id) == selId_;
             if (isSel) sel = it;
             QColor bg = isSel ? P.rowSelected : (idx % 2 ? P.rowAlt : P.row);
@@ -733,10 +1282,10 @@ void MainWindow::refresh() {
             idx++;
         }
         rowsLay_->addStretch(1);
-        setText("qcount", QString("%1 ITEMS").arg(items.size()));
+        setText("qcount", QString("%1 ITEMS").arg(shown.size()));
 
         // selected panel
-        if (!sel && !items.empty()) { sel = items.front(); selId_ = QString::fromStdString(sel->id); }
+        if (!sel && !shown.empty()) { sel = shown.front(); selId_ = QString::fromStdString(sel->id); }
         if (sel) {
             setText("sel_name", QString::fromStdString(sel->filename.empty() ? sel->url : sel->filename));
             setText("sel_host", QString::fromStdString(sel->url));

@@ -29,14 +29,16 @@ inline const Palette kDark{
     QColor("#6BD66F"), QColor("#6BD66F"), QColor("#FF6B60"), QColor("#FF6B60"), QColor("#A68CFF"), QColor("#8B97A5"),
     true, true};
 
+// Light ("Industrial light" mockup): near-white frame, white card panels with
+// crisp light-grey borders, teal/amber accents, soft amber selected row.
 inline const Palette kLight{
-    QColor("#C9D1DA"), QColor("#E4E9EF"), QColor("#D5DCE4"), QColor("#EEF2F6"), QColor("#F5F7FA"),
-    QColor("#EEF2F6"), QColor("#E8EDF2"), QColor("#F8E9CF"), QColor("#CCD4DD"), QColor("#CCD4DD"), QColor("#DCE2E9"),
-    QColor("#FFFFFF"), QColor(40, 55, 70, 89), QColor(30, 40, 50, 71), QColor("#FFFFFF"),
-    QColor("#18202A"), QColor("#3E4A57"), QColor("#56626F"),
-    QColor("#B86E00"), QColor("#8F5200"), QColor("#1C1203"), QColor("#F3DFC0"),
-    QColor("#0B8FAD"), QColor("#00708A"), QColor("#CDE9F0"),
-    QColor("#2E9E43"), QColor("#1F7A33"), QColor("#C9372C"), QColor("#B3261E"), QColor("#6A4FD6"), QColor("#8A95A3"),
+    QColor("#E7EBF1"), QColor("#FFFFFF"), QColor("#EEF2F7"), QColor("#EEF2F7"), QColor("#F4F7FA"),
+    QColor("#FFFFFF"), QColor("#F5F8FB"), QColor("#FBEED6"), QColor("#DBE2EA"), QColor("#CDD5DE"), QColor("#E6EBF1"),
+    QColor("#FFFFFF"), QColor("#D3DAE2"), QColor("#DBE2EA"), QColor("#FFFFFF"),
+    QColor("#1C2630"), QColor("#4A5563"), QColor("#7A8695"),
+    QColor("#EF9A1E"), QColor("#B5700A"), QColor("#3A2708"), QColor("#F7E2C0"),
+    QColor("#1685A6"), QColor("#0F6E8C"), QColor("#D4EAF1"),
+    QColor("#2E9E43"), QColor("#1F7A33"), QColor("#D0452F"), QColor("#B3261E"), QColor("#6A4FD6"), QColor("#8A95A3"),
     false, false};
 
 // Base stylesheet for the plain chrome; custom widgets paint themselves.
@@ -47,19 +49,26 @@ inline QString baseStylesheet(const Palette& p) {
         QToolTip{background:%PANEL%;color:%TEXT%;border:1px solid %BEVEL%}
         QLineEdit{background:transparent;border:0;color:%TEXT%;selection-background-color:%AMBER%;selection-color:%INK%}
         QScrollBar:vertical{background:transparent;width:10px;margin:0}
-        QScrollBar::handle:vertical{background:%LINE%;border-radius:5px;min-height:24px}
+        QScrollBar::handle:vertical{background:%HANDLE%;border-radius:5px;min-height:24px}
         QScrollBar::add-line,QScrollBar::sub-line{height:0}
         QScrollBar:horizontal{background:transparent;height:10px;margin:0}
-        QScrollBar::handle:horizontal{background:%LINE%;border-radius:5px;min-width:24px}
+        QScrollBar::handle:horizontal{background:%HANDLE%;border-radius:5px;min-width:24px}
         QMenu{background:%PANEL%;color:%TEXT%;border:1px solid %BEVEL%}
         QMenu::item:selected{background:%PANELHI%}
+        QComboBox QAbstractItemView{background:%PANEL%;color:%TEXT%;border:1px solid %BEVEL%;outline:0;
+            selection-background-color:%AMBER%;selection-color:%INK%}
+        QComboBox QAbstractItemView::item{min-height:24px;padding:2px 8px;color:%TEXT%}
+        QCheckBox::indicator{width:16px;height:16px;background:%WELL%;border:1px solid %BEVEL%}
+        QCheckBox::indicator:checked{background:%AMBER%;border:1px solid %AMBER%;image:url(:/icons/check.png)}
     )")
         .replace("%FRAME%", c(p.frame))
         .replace("%PANELHI%", c(p.panelHi))
         .replace("%PANEL%", c(p.panel))
+        .replace("%WELL%", c(p.well))
         .replace("%TEXT%", c(p.text))
         .replace("%AMBER%", c(p.amber))
         .replace("%INK%", c(p.amberInk))
+        .replace("%HANDLE%", c(p.text3))
         .replace("%LINE%", c(p.bevelLight))
         .replace("%BEVEL%", c(p.bevelLight));
 }
