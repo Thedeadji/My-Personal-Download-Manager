@@ -19,6 +19,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QProcess>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSystemTrayIcon>
@@ -834,6 +835,83 @@ void MainWindow::openSettings() {
     auto* clip = new QCheckBox("Offer to add links I copy to the clipboard");
     clip->setChecked(manager_.clip_monitor_pref);
     fb2->addRow("Monitoring", clip);
+
+    // ---- browser host: register the native-messaging host from inside the app ---
+    bc->addSpacing(4);
+    bc->addWidget(sectionHead("BROWSER HOST"));
+    auto* hostNote = new QLabel(
+        "Load the extension at chrome://extensions (Developer mode → Load unpacked → the "
+        "\"extension\" folder next to MPDM), paste its ID here, and Register so the browser can "
+        "hand its downloads to MPDM.");
+    hostNote->setWordWrap(true); hostNote->setFont(barlow(12));
+    hostNote->setStyleSheet("color:" + hx(P.text3) + ";background:transparent");
+    bc->addWidget(hostNote);
+    auto* hostRow = new QHBoxLayout();
+    auto* extIdEdit = new QLineEdit();
+    extIdEdit->setPlaceholderText("extension ID from chrome://extensions");
+    auto* regBtn = new IndBtn("Register", true); regBtn->setPalette(pal_);
+    auto* unregBtn = new IndBtn("Remove"); unregBtn->setPalette(pal_);
+    hostRow->addWidget(extIdEdit, 1); hostRow->addWidget(regBtn); hostRow->addWidget(unregBtn);
+    bc->addLayout(hostRow);
+    auto* hostStatus = new QLabel(); hostStatus->setFont(barlow(12));
+    hostStatus->setStyleSheet("background:transparent"); hostStatus->setWordWrap(true);
+    bc->addWidget(hostStatus);
+
+    auto hostExe = [] {
+        QString e = QCoreApplication::applicationDirPath() + "/mpdm_host";
+#ifdef _WIN32
+        e += ".exe";
+#endif
+        return e;
+    };
+    // Prefill the field with the currently-registered extension ID, if any.
+    {
+#ifdef _WIN32
+        QString mf = qEnvironmentVariable("LOCALAPPDATA") + "/MPDM/com.mypersonaldownloadmanager.host.json";
+#else
+        QString mf = qEnvironmentVariable("HOME") +
+                     "/.config/google-chrome/NativeMessagingHosts/com.mypersonaldownloadmanager.host.json";
+#endif
+        QFile f(mf);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QString s = QString::fromUtf8(f.readAll());
+            int i = s.indexOf("chrome-extension://");
+            if (i >= 0) { i += 19; int j = s.indexOf('/', i); if (j > i) extIdEdit->setText(s.mid(i, j - i)); }
+        }
+    }
+    auto runHost = [=](const QStringList& args, const QString& okMsg) {
+        QString exe = hostExe();
+        if (!QFile::exists(exe)) {
+            hostStatus->setText("mpdm_host was not found next to the app.");
+            hostStatus->setStyleSheet("color:" + hx(P.red) + ";background:transparent");
+            return;
+        }
+        QProcess p;
+        p.start(exe, args);
+        bool fin = p.waitForFinished(15000);
+        if (fin && p.exitCode() == 0) {
+            hostStatus->setText(okMsg);
+            hostStatus->setStyleSheet("color:" + hx(P.green) + ";background:transparent");
+        } else {
+            QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+            hostStatus->setText("Failed. " + (err.isEmpty() ? QString("Could not run mpdm_host.") : err));
+            hostStatus->setStyleSheet("color:" + hx(P.red) + ";background:transparent");
+        }
+    };
+    connect(regBtn, &QAbstractButton::clicked, &dlg, [=] {
+        QString id = extIdEdit->text().trimmed();
+        if (id.isEmpty()) {
+            hostStatus->setText("Enter the extension's ID first (from chrome://extensions).");
+            hostStatus->setStyleSheet("color:" + hx(P.amberText) + ";background:transparent");
+            return;
+        }
+        runHost({"--register", "--chrome", "--edge", "--extension-id", id},
+                "Registered ✓  Reload the extension in your browser.");
+    });
+    connect(unregBtn, &QAbstractButton::clicked, &dlg, [=] {
+        runHost({"--unregister", "--chrome", "--edge"}, "Browser host removed.");
+    });
+
     bc->addStretch(1);
 
     // Force the popup colors straight onto every combo's item view — the surest
