@@ -2,9 +2,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -275,8 +277,14 @@ static bool hand_off_to_app(const json& job, const std::string& job_id) {
     cmdBuf.push_back(L'\0');
     STARTUPINFOW si{}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                             nullptr, nullptr, &si, &pi);
+    // Browsers run the host inside a job object and kill the whole job when the
+    // port closes (Firefox always does). Break the app out of it so it survives;
+    // if the job doesn't allow breakaway, launch it normally.
+    BOOL ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE,
+                             CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr, &si, &pi);
+    if (!ok)
+        ok = CreateProcessW(nullptr, cmdBuf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                            nullptr, nullptr, &si, &pi);
     if (ok) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
     else log_line("handoff: CreateProcess failed (" + std::to_string(GetLastError()) + ")");
     log_line("handoff job " + job_id + " -> " + gui.string());
@@ -481,24 +489,116 @@ static int serve() {
 }
 
 // ---- native-messaging host registration ------------------------------------
+//
+// Two independent lists are kept, so several browsers can be connected at once:
+//   - Chromium family (Chrome, Edge, Brave, Vivaldi, Chromium, Opera): extension
+//     IDs go into one manifest's "allowed_origins"; every Chromium browser's
+//     registry key (Windows) / config folder (Linux) points at that manifest.
+//   - Firefox: add-on IDs go into a second manifest's "allowed_extensions"
+//     (Firefox uses its own format and location).
+// Registering an ID ADDS it to its list; unregistering one ID removes only that
+// one. A list that becomes empty removes its manifest + registrations.
 
-// Read the extension ID from the console when it wasn't passed on the command
-// line (used by the installer's "register later" shortcut and a bare --register).
+static const char* HOST_NAME = "com.mypersonaldownloadmanager.host";
+// The extension's fixed Firefox add-on ID (manifest.json browser_specific_settings).
+static const char* FIREFOX_EXT_ID = "mpdm@mypersonaldownloadmanager";
+
+static std::string trim(std::string s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+}
+
+// Firefox IDs look like "name@domain" or "{uuid}"; Chromium IDs are 32 letters a-p.
+static bool is_firefox_id(const std::string& id) {
+    return id.find('@') != std::string::npos || (!id.empty() && id.front() == '{');
+}
+// Accept "chrome-extension://<id>/" as well as the bare ID.
+static std::string normalize_chromium_id(std::string id) {
+    id = trim(id);
+    const std::string pfx = "chrome-extension://";
+    if (id.rfind(pfx, 0) == 0) id = id.substr(pfx.size());
+    while (!id.empty() && id.back() == '/') id.pop_back();
+    return id;
+}
+static bool valid_chromium_id(const std::string& id) {
+    if (id.size() != 32) return false;
+    for (char c : id) if (c < 'a' || c > 'p') return false;
+    return true;
+}
+
+// Read the extension ID from the console when none was passed on the command
+// line (the installer's "Register browser host" shortcut / a bare --register).
 static std::string prompt_ext_id() {
-    std::cout << "\nLoad the MPDM extension at chrome://extensions\n"
-                 "(Developer mode -> Load unpacked -> the 'extension' folder next to this app),\n"
-                 "then paste its ID below.\n\nExtension ID: "
+    std::cout << "\nLoad the MPDM extension in your browser, then paste its ID below.\n"
+                 "  Chrome/Edge/Brave: chrome://extensions -> Developer mode -> Load unpacked\n"
+                 "                     -> the 'extension' folder next to this app; copy the ID.\n"
+                 "  Firefox:           type  firefox  (its add-on ID is fixed).\n\nExtension ID: "
               << std::flush;
     std::string id;
     std::getline(std::cin, id);
-    size_t a = id.find_first_not_of(" \t\r\n");
-    size_t b = id.find_last_not_of(" \t\r\n");
-    return a == std::string::npos ? std::string() : id.substr(a, b - a + 1);
+    id = trim(id);
+    if (id == "firefox" || id == "Firefox") id = FIREFOX_EXT_ID;
+    return id;
+}
+
+static fs::path self_exe() {
+#ifdef _WIN32
+    wchar_t b[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, b, MAX_PATH);
+    return fs::path(std::wstring(b, n));
+#else
+    std::error_code ec;
+    fs::path p = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? fs::path("mpdm_host") : p;
+#endif
+}
+
+static json read_json_file(const fs::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return json();
+    try { json j; f >> j; return j; } catch (...) { return json(); }
+}
+static bool write_json_file(const fs::path& p, const json& j) {
+    std::error_code ec;
+    fs::create_directories(p.parent_path(), ec);
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f << j.dump(2);
+    return bool(f);
+}
+
+static json host_manifest(const char* listKey, const json& list) {
+    return {{"name", HOST_NAME},
+            {"description", "MyPersonalDownloadManager native host"},
+            {"path", self_exe().string()},
+            {"type", "stdio"},
+            {listKey, list}};
 }
 
 #ifdef _WIN32
-static const char* HOST_NAME = "com.mypersonaldownloadmanager.host";
+// Manifests live in %LOCALAPPDATA%\MPDM so registering needs no admin even when
+// the exe is in Program Files; registry keys under HKCU point at them.
+static fs::path manifest_dir() {
+    const char* lad = std::getenv("LOCALAPPDATA");
+    return lad ? fs::path(lad) / "MPDM" : self_exe().parent_path();
+}
+static fs::path chromium_manifest() { return manifest_dir() / (std::string(HOST_NAME) + ".json"); }
+static fs::path firefox_manifest() { return manifest_dir() / (std::string(HOST_NAME) + ".firefox.json"); }
 
+static const wchar_t* kChromiumRegRoots[] = {
+    L"Software\\Google\\Chrome",  // also read by Opera
+    L"Software\\Microsoft\\Edge",
+    L"Software\\Chromium",
+    L"Software\\BraveSoftware\\Brave-Browser",
+    L"Software\\Vivaldi",
+};
+static const wchar_t* kFirefoxRegRoot = L"Software\\Mozilla";
+
+static std::wstring host_key(const wchar_t* root) {
+    std::wstring wname(HOST_NAME, HOST_NAME + std::strlen(HOST_NAME));
+    return std::wstring(root) + L"\\NativeMessagingHosts\\" + wname;
+}
 static bool reg_set_default(const std::wstring& subkey, const std::wstring& value) {
     HKEY h;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, subkey.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &h,
@@ -510,107 +610,198 @@ static bool reg_set_default(const std::wstring& subkey, const std::wstring& valu
     return r == ERROR_SUCCESS;
 }
 
-static int do_register(const std::string& ext_id_in, bool chrome, bool edge) {
-    std::string ext_id = ext_id_in.empty() ? prompt_ext_id() : ext_id_in;
-    if (ext_id.empty()) {
-        std::cerr << "error: no extension ID given.\n";
-        return 2;
-    }
-    fs::path exe = []() {
-        wchar_t b[MAX_PATH]; DWORD n = GetModuleFileNameW(nullptr, b, MAX_PATH);
-        return fs::path(std::wstring(b, n));
-    }();
-    // Manifest in %LOCALAPPDATA%\MPDM so registering needs no admin even when the
-    // exe lives in Program Files; the manifest's "path" points at the exe.
-    const char* lad = std::getenv("LOCALAPPDATA");
-    fs::path manifestDir = lad ? (fs::path(lad) / "MPDM") : exe.parent_path();
-    std::error_code mec; fs::create_directories(manifestDir, mec);
-    fs::path manifest = manifestDir / (std::string(HOST_NAME) + ".json");
-    json m = {{"name", HOST_NAME},
-              {"description", "MyPersonalDownloadManager native host"},
-              {"path", exe.string()},
-              {"type", "stdio"},
-              {"allowed_origins", json::array({std::string("chrome-extension://") + ext_id + "/"})}};
-    try {
-        std::ofstream f(manifest, std::ios::binary | std::ios::trunc);
-        f << m.dump(2);
-    } catch (...) {
-        std::cerr << "error: could not write manifest " << manifest.string() << "\n";
-        return 1;
-    }
-    std::wstring wmanifest = manifest.wstring();
-    std::wstring wname(HOST_NAME, HOST_NAME + std::strlen(HOST_NAME));
-    bool ok = true;
-    if (chrome)
-        ok &= reg_set_default(L"Software\\Google\\Chrome\\NativeMessagingHosts\\" + wname, wmanifest);
-    if (edge)
-        ok &= reg_set_default(L"Software\\Microsoft\\Edge\\NativeMessagingHosts\\" + wname, wmanifest);
-    std::cout << (ok ? "registered native host:\n  " : "registered manifest but a registry write failed:\n  ")
-              << manifest.string() << "\n  extension: " << ext_id << "\n"
-              << (chrome ? "  Chrome: yes\n" : "") << (edge ? "  Edge: yes\n" : "");
-    return ok ? 0 : 1;
+static std::vector<std::string> install_chromium(const json& m) {
+    std::vector<std::string> done;
+    if (!write_json_file(chromium_manifest(), m)) return done;
+    for (auto* root : kChromiumRegRoots)
+        if (reg_set_default(host_key(root), chromium_manifest().wstring()))
+            done.push_back(fs::path(root).filename().string());
+    return done;
+}
+static void uninstall_chromium() {
+    for (auto* root : kChromiumRegRoots) RegDeleteKeyW(HKEY_CURRENT_USER, host_key(root).c_str());
+    std::error_code ec;
+    fs::remove(chromium_manifest(), ec);
+}
+static std::vector<std::string> install_firefox(const json& m) {
+    std::vector<std::string> done;
+    if (write_json_file(firefox_manifest(), m) &&
+        reg_set_default(host_key(kFirefoxRegRoot), firefox_manifest().wstring()))
+        done.push_back("Firefox");
+    return done;
+}
+static void uninstall_firefox() {
+    RegDeleteKeyW(HKEY_CURRENT_USER, host_key(kFirefoxRegRoot).c_str());
+    std::error_code ec;
+    fs::remove(firefox_manifest(), ec);
 }
 
-static int do_unregister(bool chrome, bool edge) {
-    std::wstring wname(HOST_NAME, HOST_NAME + std::strlen(HOST_NAME));
-    if (chrome) RegDeleteKeyW(HKEY_CURRENT_USER, (L"Software\\Google\\Chrome\\NativeMessagingHosts\\" + wname).c_str());
-    if (edge) RegDeleteKeyW(HKEY_CURRENT_USER, (L"Software\\Microsoft\\Edge\\NativeMessagingHosts\\" + wname).c_str());
-    std::cout << "unregistered native host (" << HOST_NAME << ")\n";
-    return 0;
+#else  // ---- Linux: manifests are files in each browser's config folder ----
+
+static fs::path home_path() {
+    const char* h = std::getenv("HOME");
+    return h ? fs::path(h) : fs::path(".");
 }
-#endif  // _WIN32
+// Canonical copy of each list (what --list reads), kept in the MPDM state dir.
+static fs::path chromium_manifest() { return fs::path(state_dir()) / "native-host" / "chromium.json"; }
+static fs::path firefox_manifest() { return fs::path(state_dir()) / "native-host" / "firefox.json"; }
 
-#ifndef _WIN32
-static const char* HOST_NAME = "com.mypersonaldownloadmanager.host";
-
-// Browser config dirs under ~/.config that use Chrome-style native messaging.
-static const char* kBrowserDirs[] = {
-    "google-chrome", "chromium", "microsoft-edge",
-    "google-chrome-beta", "BraveSoftware/Brave-Browser",
+static const char* kChromiumDirs[] = {  // under ~/.config
+    "google-chrome", "google-chrome-beta", "google-chrome-unstable", "chromium",
+    "microsoft-edge", "BraveSoftware/Brave-Browser", "vivaldi", "opera",
 };
+static std::vector<fs::path> firefox_dirs() {  // regular and snap Firefox
+    return {home_path() / ".mozilla", home_path() / "snap" / "firefox" / "common" / ".mozilla"};
+}
+static std::string manifest_name() { return std::string(HOST_NAME) + ".json"; }
 
-static int do_register_posix(const std::string& ext_id_in) {
-    std::string ext_id = ext_id_in.empty() ? prompt_ext_id() : ext_id_in;
-    if (ext_id.empty()) {
-        std::cerr << "error: no extension ID given.\n";
-        return 2;
-    }
+static std::vector<std::string> install_chromium(const json& m) {
+    std::vector<std::string> done;
+    write_json_file(chromium_manifest(), m);
     std::error_code ec;
-    fs::path exe = fs::read_symlink("/proc/self/exe", ec);  // this host binary
-    if (ec || exe.empty()) exe = "mpdm_host";
-    const char* home = std::getenv("HOME");
-    if (!home) { std::cerr << "error: HOME not set\n"; return 1; }
-    json m = {{"name", HOST_NAME},
-              {"description", "MyPersonalDownloadManager native host"},
-              {"path", exe.string()},
-              {"type", "stdio"},
-              {"allowed_origins", json::array({std::string("chrome-extension://") + ext_id + "/"})}};
-    bool any = false;
-    for (auto* b : kBrowserDirs) {
-        fs::path bdir = fs::path(home) / ".config" / b;
+    for (auto* b : kChromiumDirs) {
+        fs::path bdir = home_path() / ".config" / b;
         if (!fs::is_directory(bdir, ec)) continue;  // that browser isn't installed
-        fs::path dir = bdir / "NativeMessagingHosts";
-        fs::create_directories(dir, ec);
-        fs::path manifest = dir / (std::string(HOST_NAME) + ".json");
-        std::ofstream f(manifest, std::ios::trunc);
-        if (f) { f << m.dump(2); std::cout << "registered: " << manifest.string() << "\n"; any = true; }
+        if (write_json_file(bdir / "NativeMessagingHosts" / manifest_name(), m)) done.push_back(b);
     }
-    if (!any) std::cerr << "no supported browser config dir under " << home << "/.config\n";
-    return any ? 0 : 1;
+    return done;
+}
+static void uninstall_chromium() {
+    std::error_code ec;
+    for (auto* b : kChromiumDirs)
+        fs::remove(home_path() / ".config" / b / "NativeMessagingHosts" / manifest_name(), ec);
+    fs::remove(chromium_manifest(), ec);
+}
+static std::vector<std::string> install_firefox(const json& m) {
+    std::vector<std::string> done;
+    write_json_file(firefox_manifest(), m);
+    std::error_code ec;
+    for (const auto& d : firefox_dirs()) {
+        if (!fs::is_directory(d, ec)) continue;
+        if (write_json_file(d / "native-messaging-hosts" / manifest_name(), m))
+            done.push_back(d.string().find("snap") != std::string::npos ? "Firefox (snap)" : "Firefox");
+    }
+    return done;
+}
+static void uninstall_firefox() {
+    std::error_code ec;
+    for (const auto& d : firefox_dirs()) fs::remove(d / "native-messaging-hosts" / manifest_name(), ec);
+    fs::remove(firefox_manifest(), ec);
+}
+#endif
+
+// Currently registered IDs, read back from the canonical manifests.
+static std::vector<std::string> registered_chromium() {
+    std::vector<std::string> ids;
+    json m = read_json_file(chromium_manifest());
+#ifndef _WIN32
+    // Older Linux builds only wrote per-browser manifests; pick those up too.
+    if (!m.is_object())
+        for (auto* b : kChromiumDirs) {
+            m = read_json_file(home_path() / ".config" / b / "NativeMessagingHosts" / manifest_name());
+            if (m.is_object()) break;
+        }
+#endif
+    if (m.is_object() && m.contains("allowed_origins") && m["allowed_origins"].is_array())
+        for (auto& o : m["allowed_origins"])
+            if (o.is_string()) {
+                std::string id = normalize_chromium_id(o.get<std::string>());
+                if (!id.empty()) ids.push_back(id);
+            }
+    return ids;
+}
+static std::vector<std::string> registered_firefox() {
+    std::vector<std::string> ids;
+    json m = read_json_file(firefox_manifest());
+    if (m.is_object() && m.contains("allowed_extensions") && m["allowed_extensions"].is_array())
+        for (auto& o : m["allowed_extensions"])
+            if (o.is_string()) ids.push_back(o.get<std::string>());
+    return ids;
 }
 
-static int do_unregister_posix() {
-    const char* home = std::getenv("HOME");
-    if (!home) return 1;
-    std::error_code ec;
-    for (auto* b : kBrowserDirs)
-        fs::remove(fs::path(home) / ".config" / b / "NativeMessagingHosts" /
-                       (std::string(HOST_NAME) + ".json"),
-                   ec);
-    std::cout << "unregistered native host (" << HOST_NAME << ")\n";
+static void apply_chromium(const std::vector<std::string>& ids) {
+    if (ids.empty()) { uninstall_chromium(); return; }
+    json origins = json::array();
+    for (auto& id : ids) origins.push_back("chrome-extension://" + id + "/");
+    auto done = install_chromium(host_manifest("allowed_origins", origins));
+    std::cout << "Chromium browsers (" << ids.size() << " ID" << (ids.size() == 1 ? "" : "s") << "): ";
+    for (size_t i = 0; i < done.size(); ++i) std::cout << (i ? ", " : "") << done[i];
+    std::cout << (done.empty() ? "none found" : "") << "\n";
+}
+static void apply_firefox(const std::vector<std::string>& ids) {
+    if (ids.empty()) { uninstall_firefox(); return; }
+    auto done = install_firefox(host_manifest("allowed_extensions", json(ids)));
+    std::cout << "Firefox (" << ids.size() << " ID" << (ids.size() == 1 ? "" : "s") << "): ";
+    for (size_t i = 0; i < done.size(); ++i) std::cout << (i ? ", " : "") << done[i];
+    std::cout << (done.empty() ? "Firefox not found" : "") << "\n";
+}
+
+static bool has(const std::vector<std::string>& v, const std::string& s) {
+    return std::find(v.begin(), v.end(), s) != v.end();
+}
+
+// --register: add each ID to its list (Chromium or Firefox). No IDs -> prompt.
+static int do_register(std::vector<std::string> ids, bool firefox) {
+    if (firefox) ids.push_back(FIREFOX_EXT_ID);
+    if (ids.empty()) {
+        std::string p = prompt_ext_id();
+        if (!p.empty()) ids.push_back(p);
+    }
+    if (ids.empty()) { std::cerr << "error: no extension ID given.\n"; return 2; }
+
+    auto chromium = registered_chromium();
+    auto ff = registered_firefox();
+    for (auto raw : ids) {
+        raw = trim(raw);
+        if (is_firefox_id(raw)) {
+            if (!has(ff, raw)) ff.push_back(raw);
+            std::cout << "+ Firefox add-on " << raw << "\n";
+        } else {
+            std::string id = normalize_chromium_id(raw);
+            if (!valid_chromium_id(id)) {
+                std::cerr << "error: '" << raw << "' is not an extension ID (32 letters a-p, "
+                             "shown on chrome://extensions).\n";
+                return 2;
+            }
+            if (!has(chromium, id)) chromium.push_back(id);
+            std::cout << "+ extension " << id << "\n";
+        }
+    }
+    // Re-apply both lists so each manifest's exe path tracks this binary.
+    if (!chromium.empty()) apply_chromium(chromium);
+    if (!ff.empty()) apply_firefox(ff);
     return 0;
 }
-#endif  // !_WIN32
+
+// --unregister: remove the given IDs (or everything when none are given).
+static int do_unregister(const std::vector<std::string>& ids, bool firefox) {
+    if (ids.empty() && !firefox) {
+        uninstall_chromium();
+        uninstall_firefox();
+        std::cout << "unregistered native host (" << HOST_NAME << ") from all browsers\n";
+        return 0;
+    }
+    auto chromium = registered_chromium();
+    auto ff = registered_firefox();
+    std::vector<std::string> gone = ids;
+    if (firefox) gone.push_back(FIREFOX_EXT_ID);
+    for (const auto& raw : gone) {
+        std::string id = is_firefox_id(raw) ? trim(raw) : normalize_chromium_id(raw);
+        chromium.erase(std::remove(chromium.begin(), chromium.end(), id), chromium.end());
+        ff.erase(std::remove(ff.begin(), ff.end(), id), ff.end());
+        std::cout << "- " << id << "\n";
+    }
+    apply_chromium(chromium);
+    apply_firefox(ff);
+    return 0;
+}
+
+// --list: machine-readable registrations (used by the app's Settings page).
+static int do_list() {
+    std::cout << json{{"chromium", registered_chromium()}, {"firefox", registered_firefox()}}.dump() << "\n";
+    return 0;
+}
+
 
 static int selftest() {
     std::stringstream buf;
@@ -633,38 +824,22 @@ static int selftest() {
 }
 
 int run_native_host(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i)
-        if (std::string(argv[i]) == "--selftest") return selftest();
-#ifdef _WIN32
-    {
-        bool reg = false, unreg = false, chrome = false, edge = false;
-        std::string ext_id;
-        for (int i = 1; i < argc; ++i) {
-            std::string a = argv[i];
-            if (a == "--register") reg = true;
-            else if (a == "--unregister") unreg = true;
-            else if (a == "--chrome") chrome = true;
-            else if (a == "--edge") edge = true;
-            else if (a == "--extension-id" && i + 1 < argc) ext_id = argv[++i];
-        }
-        if (reg || unreg) {
-            if (!chrome && !edge) chrome = edge = true;  // default: both
-            return reg ? do_register(ext_id, chrome, edge) : do_unregister(chrome, edge);
-        }
+    bool reg = false, unreg = false, list = false, firefox = false;
+    std::vector<std::string> ids;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--selftest") return selftest();
+        if (a == "--register") reg = true;
+        else if (a == "--unregister") unreg = true;
+        else if (a == "--list") list = true;
+        else if (a == "--firefox") firefox = true;
+        else if (a == "--extension-id" && i + 1 < argc) ids.push_back(argv[++i]);
+        // --chrome / --edge (older installers) are accepted and ignored: every
+        // Chromium browser is registered together now.
     }
-#else
-    {
-        bool reg = false, unreg = false;
-        std::string ext_id;
-        for (int i = 1; i < argc; ++i) {
-            std::string a = argv[i];
-            if (a == "--register") reg = true;
-            else if (a == "--unregister") unreg = true;
-            else if (a == "--extension-id" && i + 1 < argc) ext_id = argv[++i];
-        }
-        if (reg || unreg) return reg ? do_register_posix(ext_id) : do_unregister_posix();
-    }
-#endif
+    if (list) return do_list();
+    if (reg) return do_register(ids, firefox);
+    if (unreg) return do_unregister(ids, firefox);
 #ifdef _WIN32
     // Binary stdio so the 4-byte framing isn't mangled by CRLF translation.
     _setmode(_fileno(stdin), _O_BINARY);

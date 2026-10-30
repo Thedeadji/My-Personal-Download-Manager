@@ -21,22 +21,20 @@ driver or process-memory hooking. The extension collects the URL, a suggested
 filename, the page `Referer`, and the site **cookies** (via `chrome.cookies`)
 so downloads behind a login replay correctly, then passes them to the host.
 
-## Install (Chrome / Edge)
+## Install (Chrome / Edge / Brave / Vivaldi)
 
-1. **Load the extension**
-   - Open `chrome://extensions` (or `edge://extensions`).
+1. **Install MPDM** (the Windows installer, or the Linux `.deb`). It ships this
+   folder and the native host `mpdm_host`.
+
+2. **Load the extension**
+   - Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`).
    - Turn on **Developer mode**.
    - Click **Load unpacked** and select this `extension` folder.
    - Copy the extension's **ID** shown on its card.
 
-2. **Install the native host** (registers it so the browser can launch it)
-   ```bash
-   # from the project root (one level up from this folder)
-   python install_host.py --extension-id <THE_ID_YOU_COPIED> --browser chrome
-   ```
-   Use `--browser edge` for Edge, or `--browser all` for both. On Windows this
-   also writes the required registry key under
-   `HKCU\Software\Google\Chrome\NativeMessagingHosts`.
+   **Connect it**: in MPDM open **Settings → Browser → Connected browsers**, paste
+   the ID and click **Add**. Or from a terminal: `mpdm_host --register --extension-id <ID>`.
+   Repeat for every browser you use; each one is added to the list.
 
 3. **Verify** — click the extension icon → **Test connection to host**. You
    should see “Host connected ✓”.
@@ -54,10 +52,9 @@ Settings point). Progress and completion show as desktop notifications.
 
 ## Uninstall
 
-```bash
-python install_host.py --uninstall --browser all
-```
-and remove the extension from `chrome://extensions`.
+Remove the browser in **Settings → Browser → Connected browsers** (or run
+`mpdm_host --unregister`, which removes all of them) and remove the extension from
+the browser. Uninstalling MPDM on Windows unregisters everything automatically.
 
 ## Notes / limits
 
@@ -68,3 +65,20 @@ and remove the extension from `chrome://extensions`.
 - Firefox uses `allowed_extensions` + a different manifest location; the
   installer handles both, but you'll want an `applications.gecko.id` in the
   manifest for a real Firefox build.
+
+
+## Firefox
+
+The same folder works in Firefox 121+ (the manifest carries both a Chrome
+`service_worker` and a Firefox background `scripts` entry, plus the fixed add-on ID
+`mpdm@mypersonaldownloadmanager`).
+
+1. In MPDM: **Settings → Browser → Connect Firefox** (the Windows installer does this
+   for you).
+2. In Firefox: `about:debugging` → **This Firefox** → **Load Temporary Add-on…** →
+   pick this folder's `manifest.json`.
+
+Release Firefox only runs *unsigned* add-ons temporarily (until Firefox restarts). To
+keep it installed, either sign it for free as an unlisted add-on on
+addons.mozilla.org, or use Firefox Developer Edition / Nightly with
+`xpinstall.signatures.required` set to `false`.

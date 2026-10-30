@@ -50,21 +50,23 @@ Source: "{#ExtDir}\*"; DestDir: "{app}\extension"; Flags: recursesubdirs createa
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{group}\Register browser host"; Filename: "{cmd}"; Parameters: "/k ""{app}\{#HostExe}"" --register --chrome --edge"; Comment: "Connect the MPDM browser extension (paste its ID when asked)"
+Name: "{group}\Register browser host"; Filename: "{cmd}"; Parameters: "/k ""{app}\{#HostExe}"" --register"; Comment: "Connect a browser to MPDM (paste its extension ID, or type firefox)"
 Name: "{group}\Browser extension folder"; Filename: "{app}\extension"; Comment: "Load this folder unpacked at chrome://extensions"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
 ; If the user already knows the extension ID, register the native host now.
-Filename: "{app}\{#HostExe}"; Parameters: "--register --chrome --edge --extension-id ""{code:GetExtId}"""; Flags: runhidden; Check: HasExtId; StatusMsg: "Registering browser host..."
+Filename: "{app}\{#HostExe}"; Parameters: "--register --extension-id ""{code:GetExtId}"""; Flags: runhidden; Check: HasExtId; StatusMsg: "Registering browser host..."
+; Firefox's add-on ID is fixed, so it can always be connected up front.
+Filename: "{app}\{#HostExe}"; Parameters: "--register --firefox"; Flags: runhidden; StatusMsg: "Connecting Firefox..."
 ; Open the extension folder so the user can load it unpacked in the browser.
 Filename: "{win}\explorer.exe"; Parameters: """{app}\extension"""; Description: "Open the browser extension folder"; Flags: postinstall skipifsilent nowait
 Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; Remove the native-host registration on uninstall.
-Filename: "{app}\{#HostExe}"; Parameters: "--unregister --chrome --edge"; Flags: runhidden; RunOnceId: "unreghost"
+Filename: "{app}\{#HostExe}"; Parameters: "--unregister"; Flags: runhidden; RunOnceId: "unreghost"
 
 [Code]
 var
@@ -76,10 +78,10 @@ begin
     'Browser integration (optional)',
     'Connect the MPDM browser extension',
     'MPDM can take over downloads from your browser. The extension is installed to the ' +
-    '"extension" folder inside the install folder.' + #13#10#13#10 +
-    'If you have ALREADY loaded the extension (chrome://extensions -> Developer mode -> ' +
-    'Load unpacked), paste its ID below to connect it now. Otherwise leave this blank and ' +
-    'use the "Register browser host" Start-menu shortcut after you load the extension.');
+    '"extension" folder inside the install folder. Firefox is connected automatically.' + #13#10#13#10 +
+    'For Chrome / Edge / Brave: if you have ALREADY loaded the extension (chrome://extensions ' +
+    '-> Developer mode -> Load unpacked), paste its ID below. Otherwise leave this blank and ' +
+    'add it later in MPDM -> Settings -> Browser (you can connect several browsers).');
   ExtPage.Add('Extension ID (optional):', False);
 end;
 

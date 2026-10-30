@@ -38,17 +38,19 @@ sudo apt install cmake ninja-build g++ qt6-base-dev \
 
 ## Browser integration
 
-After installing, register the native messaging host for your browser:
+Several browsers can be connected at once, and each registration adds to the list.
 
-```bash
-mpdm_host --register --extension-id <ID from chrome://extensions>
-```
+- **Chrome / Chromium / Edge / Brave / Vivaldi / Opera:** load `extension/` unpacked
+  (`chrome://extensions` → Developer mode → Load unpacked; the `.deb` installs it to
+  `/usr/share/mpdm/extension`), copy its ID, then either use **Settings → Browser →
+  Connected browsers → Add** in the app, or run
+  `mpdm_host --register --extension-id <ID>`.
+- **Firefox (121+):** click **Connect Firefox** in Settings, or run
+  `mpdm_host --register --firefox` (the add-on ID is fixed). Then load the extension
+  at `about:debugging` → This Firefox → Load Temporary Add-on → `manifest.json`.
 
-This writes `~/.config/<browser>/NativeMessagingHosts/com.mypersonaldownloadmanager.host.json`
-for Chrome / Chromium / Edge (whichever are installed). Load `extension/` unpacked
-in the browser to get its ID first (the `.deb` installs it to
-`/usr/share/mpdm/extension`). You can also register from the app: **Settings →
-Browser → Browser host**.
+`mpdm_host --list` shows what's registered; `mpdm_host --unregister --extension-id <ID>`
+removes one entry, and a bare `mpdm_host --unregister` removes all of them.
 
 ## How browser downloads reach the app
 

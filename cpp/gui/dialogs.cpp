@@ -13,6 +13,9 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
@@ -837,23 +840,38 @@ void MainWindow::openSettings() {
     clip->setChecked(manager_.clip_monitor_pref);
     fb2->addRow("Monitoring", clip);
 
-    // ---- browser host: register the native-messaging host from inside the app ---
+    // ---- browser host: connect one or more browsers from inside the app --------
     bc->addSpacing(4);
-    bc->addWidget(sectionHead("BROWSER HOST"));
+    bc->addWidget(sectionHead("CONNECTED BROWSERS"));
     auto* hostNote = new QLabel(
-        "Load the extension at chrome://extensions (Developer mode → Load unpacked → the "
-        "\"extension\" folder next to MPDM), paste its ID here, and Register so the browser can "
-        "hand its downloads to MPDM.");
+        "Chrome / Edge / Brave / Vivaldi: load the extension at chrome://extensions (Developer mode "
+        "→ Load unpacked → the \"extension\" folder next to MPDM), paste its ID and Add. "
+        "Repeat for each browser. Firefox: click Connect Firefox, then load the extension at "
+        "about:debugging → This Firefox → Load Temporary Add-on (pick manifest.json).");
     hostNote->setWordWrap(true); hostNote->setFont(barlow(12));
     hostNote->setStyleSheet("color:" + hx(P.text3) + ";background:transparent");
     bc->addWidget(hostNote);
+
+    auto* hostList = new QListWidget();
+    hostList->setFixedHeight(112);
+    hostList->setFont(mono(11));
+    hostList->setStyleSheet(QString("QListWidget{background:%1;color:%2;border:1px solid %3;outline:0}"
+                                    "QListWidget::item{padding:5px 8px}"
+                                    "QListWidget::item:selected{background:%4;color:%5}")
+                                .arg(hx(P.well), hx(P.text), hx(P.bevelLight), hx(P.rowSelected), hx(P.amberText)));
+    bc->addWidget(hostList);
+
     auto* hostRow = new QHBoxLayout();
     auto* extIdEdit = new QLineEdit();
     extIdEdit->setPlaceholderText("extension ID from chrome://extensions");
-    auto* regBtn = new IndBtn("Register", true); regBtn->setPalette(pal_);
-    auto* unregBtn = new IndBtn("Remove"); unregBtn->setPalette(pal_);
-    hostRow->addWidget(extIdEdit, 1); hostRow->addWidget(regBtn); hostRow->addWidget(unregBtn);
+    auto* addBtn = new IndBtn("Add", true); addBtn->setPalette(pal_);
+    auto* ffBtn = new IndBtn("Connect Firefox"); ffBtn->setPalette(pal_);
+    auto* rmBtn = new IndBtn("Remove"); rmBtn->setPalette(pal_);
+    hostRow->addWidget(extIdEdit, 1); hostRow->addWidget(addBtn);
     bc->addLayout(hostRow);
+    auto* hostRow2 = new QHBoxLayout();
+    hostRow2->addWidget(ffBtn); hostRow2->addStretch(1); hostRow2->addWidget(rmBtn);
+    bc->addLayout(hostRow2);
     auto* hostStatus = new QLabel(); hostStatus->setFont(barlow(12));
     hostStatus->setStyleSheet("background:transparent"); hostStatus->setWordWrap(true);
     bc->addWidget(hostStatus);
@@ -872,52 +890,66 @@ void MainWindow::openSettings() {
         QString onPath = QStandardPaths::findExecutable(name);
         return onPath.isEmpty() ? dir + "/" + name : onPath;
     };
-    // Prefill the field with the currently-registered extension ID, if any.
-    {
-#ifdef _WIN32
-        QString mf = qEnvironmentVariable("LOCALAPPDATA") + "/MPDM/com.mypersonaldownloadmanager.host.json";
-#else
-        QString mf = qEnvironmentVariable("HOME") +
-                     "/.config/google-chrome/NativeMessagingHosts/com.mypersonaldownloadmanager.host.json";
-#endif
-        QFile f(mf);
-        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QString s = QString::fromUtf8(f.readAll());
-            int i = s.indexOf("chrome-extension://");
-            if (i >= 0) { i += 19; int j = s.indexOf('/', i); if (j > i) extIdEdit->setText(s.mid(i, j - i)); }
-        }
-    }
-    auto runHost = [=](const QStringList& args, const QString& okMsg) {
+    auto setStatus = [=](const QString& t, const QColor& c) {
+        hostStatus->setText(t);
+        hostStatus->setStyleSheet("color:" + hx(c) + ";background:transparent");
+    };
+    // Run mpdm_host with args; returns {ok, stdout+stderr}.
+    auto runHost = [=](const QStringList& args) -> std::pair<bool, QString> {
         QString exe = hostExe();
-        if (!QFile::exists(exe)) {
-            hostStatus->setText("mpdm_host was not found next to the app.");
-            hostStatus->setStyleSheet("color:" + hx(P.red) + ";background:transparent");
-            return;
-        }
+        if (!QFile::exists(exe)) return {false, "mpdm_host was not found next to the app."};
         QProcess p;
         p.start(exe, args);
         bool fin = p.waitForFinished(15000);
-        if (fin && p.exitCode() == 0) {
-            hostStatus->setText(okMsg);
-            hostStatus->setStyleSheet("color:" + hx(P.green) + ";background:transparent");
-        } else {
-            QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
-            hostStatus->setText("Failed. " + (err.isEmpty() ? QString("Could not run mpdm_host.") : err));
-            hostStatus->setStyleSheet("color:" + hx(P.red) + ";background:transparent");
+        QString out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError()).trimmed();
+        return {fin && p.exitCode() == 0, out};
+    };
+    // Rebuild the list from `mpdm_host --list` (the registered manifests).
+    auto reloadHosts = [=] {
+        hostList->clear();
+        auto [ok, out] = runHost({"--list"});
+        QJsonObject o = QJsonDocument::fromJson(out.toUtf8()).object();
+        for (const auto& v : o.value("chromium").toArray()) {
+            auto* it = new QListWidgetItem("Chrome / Edge / Brave  ·  " + v.toString());
+            it->setData(Qt::UserRole, v.toString());
+            hostList->addItem(it);
+        }
+        for (const auto& v : o.value("firefox").toArray()) {
+            auto* it = new QListWidgetItem("Firefox  ·  " + v.toString());
+            it->setData(Qt::UserRole, v.toString());
+            hostList->addItem(it);
+        }
+        if (hostList->count() == 0) {
+            auto* it = new QListWidgetItem("No browsers connected yet");
+            it->setFlags(Qt::NoItemFlags);
+            hostList->addItem(it);
         }
     };
-    connect(regBtn, &QAbstractButton::clicked, &dlg, [=] {
+    reloadHosts();
+
+    connect(addBtn, &QAbstractButton::clicked, &dlg, [=] {
         QString id = extIdEdit->text().trimmed();
-        if (id.isEmpty()) {
-            hostStatus->setText("Enter the extension's ID first (from chrome://extensions).");
-            hostStatus->setStyleSheet("color:" + hx(P.amberText) + ";background:transparent");
-            return;
-        }
-        runHost({"--register", "--chrome", "--edge", "--extension-id", id},
-                "Registered ✓  Reload the extension in your browser.");
+        if (id.isEmpty()) { setStatus("Paste the extension's ID first (from chrome://extensions).", P.amberText); return; }
+        auto [ok, out] = runHost({"--register", "--extension-id", id});
+        if (ok) { extIdEdit->clear(); setStatus("Connected ✓  Reload the extension in that browser.", P.green); }
+        else setStatus("Failed. " + (out.isEmpty() ? QString("Could not run mpdm_host.") : out), P.red);
+        reloadHosts();
     });
-    connect(unregBtn, &QAbstractButton::clicked, &dlg, [=] {
-        runHost({"--unregister", "--chrome", "--edge"}, "Browser host removed.");
+    connect(ffBtn, &QAbstractButton::clicked, &dlg, [=] {
+        auto [ok, out] = runHost({"--register", "--firefox"});
+        if (ok && out.contains("not found"))
+            setStatus("Registered, but no Firefox profile folder was found. Start Firefox once, then try again.", P.amberText);
+        else if (ok) setStatus("Firefox connected ✓  Load the extension in Firefox if you haven't.", P.green);
+        else setStatus("Failed. " + out, P.red);
+        reloadHosts();
+    });
+    connect(rmBtn, &QAbstractButton::clicked, &dlg, [=] {
+        auto* it = hostList->currentItem();
+        QString id = it ? it->data(Qt::UserRole).toString() : QString();
+        if (id.isEmpty()) { setStatus("Select a browser in the list to remove.", P.amberText); return; }
+        auto [ok, out] = runHost({"--unregister", "--extension-id", id});
+        setStatus(ok ? "Removed." : "Failed. " + out, ok ? P.green : P.red);
+        reloadHosts();
     });
 
     bc->addStretch(1);
