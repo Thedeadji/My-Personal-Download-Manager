@@ -1,296 +1,233 @@
 # MyPersonalDownloadManager (MPDM)
 
-A small, readable **download manager built from scratch in Python**, for
-learning and research. It implements the core ideas behind modern download
-accelerators — multi-connection *segmented* HTTP downloading with resume — plus
-a basic HLS/DASH stream grabber that assembles video segments into an MP4.
+**MPDM is a free, open-source download manager for Windows and Linux**, written from
+scratch. It speeds up downloads by fetching each file over several connections at
+once, resumes interrupted downloads, grabs HLS/DASH video streams into MP4, and takes
+over downloads from your browser through an extension.
 
-This is **100% original code**. It is not derived from, and contains no part of,
-any commercial download manager. It was written as a study of how such tools
-work internally.
+This is 100% original code. It is not derived from, and contains no part of, any
+commercial download manager. No license key, no registration: it's free by design
+(MIT).
 
-## Two ways to run it
+## 1. What it does
 
-MPDM comes in two forms that share the same design and the same browser extension:
+**Downloading**
+- **Multi-connection downloads.** A file is split into byte ranges (HTTP `Range`
+  requests) fetched in parallel and written straight into one pre-allocated file.
+- **Dynamic segmentation.** A connection that finishes early takes over half of the
+  slowest remaining range, so no connection sits idle near the end.
+- **Resume.** Progress is checkpointed to a `<file>.mpdm` sidecar; an interrupted
+  download continues where it stopped (when the server's size and ETag still match).
+- **Video streams.** HLS (`.m3u8`, including AES-128 encrypted) and DASH (`.mpd`)
+  are downloaded segment by segment and joined into an MP4 with `ffmpeg`.
+- **Google Drive links** are resolved past the "can't scan for viruses" page to the
+  real file and its real name.
+- **Batch / wildcard URLs** such as `img[1-100].jpg` or `ep[01-12].mp4`.
+- **Speed limits** per download and globally, adjustable while downloading.
+- **Retries** on connection errors, with a configurable wait between tries.
 
-| | **Installed app** (C++ / Qt) | **Python version** |
+**Organizing**
+- **Categories.** Finished files are sorted into Video, Music, Documents,
+  Compressed and Programs folders. Each category can have its own folder, extra file
+  types, and you can create your own categories.
+- **When a file already exists:** rename, overwrite, skip, or ask each time.
+- **Temporary folder** for parts in progress, optional **server file dates**,
+  and **incognito** downloads that never appear in the history.
+- **Scheduler** (pause/resume or change the speed limit at set times) and a
+  **"when all finish"** action (run a program, sleep, shut down).
+
+**Using it**
+- **Desktop app** with a queue, throughput graph and per-connection view; a live
+  **download popup** for each download; a **tray icon** that shows progress and
+  status, with a quick panel on left-click.
+- **Browser extension** for Chrome, Edge, Brave, Vivaldi, Opera and Firefox:
+  right-click any link → *Download with MyPersonalDownloadManager*, optionally capture
+  every browser download, and a floating panel that lists the videos on a page.
+  Several browsers can be connected at once.
+- **Command line** (`mpdm get <url>`) and a **web dashboard** (`mpdm web`), included in
+  the Linux packages (AppImage: `./MPDM-*.AppImage --cli get <url>`). On Windows, use the
+  Python version (section 4) for the command line.
+
+## 2. How it works
+
+```
+ Browser extension ──native messaging──► mpdm_host ──job file──► Desktop app (queue)
+                                                                       │
+ Command line / web dashboard ─────────────────────────────────────────┤
+                                                                       ▼
+                                                              Download manager
+                                                       (queue, limits, categories,
+                                                        scheduler, settings)
+                                                                       │
+                                                                       ▼
+                                                              Download engine
+                                       probe size + range support ─► split into ranges
+                                       ─► N worker connections ─► write at offsets
+                                       ─► checkpoint to .mpdm ─► verify ─► move/sort
+```
+
+1. **Probe.** The engine asks the server for the file size, whether it supports
+   ranges, its name and its ETag.
+2. **Split and download.** The file is pre-allocated and divided into ranges; a pool
+   of connections downloads them, stealing work from the slowest range when idle.
+   Servers without range support get a single resumable stream.
+3. **Checkpoint.** Every second the per-range progress is saved to `<file>.mpdm`, so
+   a crash, pause or reboot resumes instead of restarting.
+4. **Finish.** The final size is checked against the server's, the file is moved
+   to its category folder, and the sidecar is removed.
+
+**Browser downloads.** The extension sends the URL, cookies and referrer (so
+logged-in downloads work) to the native host `mpdm_host`. The host drops the job into
+`~/.mypersonaldownloadmanager/jobs/` and starts the desktop app if it isn't running.
+The app (single instance) picks the job up, adds it to the queue and opens its
+download popup, so every setting applies to browser downloads too.
+
+**Where things are kept.** Settings, the download list and the job queue live in
+`~/.mypersonaldownloadmanager/` (`C:\Users\<you>\.mypersonaldownloadmanager` on
+Windows).
+
+### Project layout
+
+```
+MyPersonalDownloadManager/
+├── cpp/                         The app (C++17)
+│   ├── src/, include/mpdm/      Core: engine, manager, HTTP (libcurl), HLS/DASH,
+│   │                            AES-128, categories, scheduler, native host, CLI, web
+│   ├── gui/                     Desktop app, Qt 6 ("Industrial" design) — Windows + Linux
+│   ├── gui-gtk/                 Desktop app, GTK 4 + libadwaita (GNOME-native) — Linux
+│   ├── tests/                   Unit tests (CTest)
+│   ├── packaging/
+│   │   ├── mpdm.iss             Windows installer (Inno Setup)
+│   │   └── linux/               .deb (CPack), AppImage, .desktop files, build notes
+│   ├── CMakeLists.txt           Build (targets: mpdm, mpdm_host, mpdm_gui, mpdm_gtk)
+│   └── vcpkg.json               Dependencies on Windows
+├── extension/                   Browser extension (Manifest V3, Chrome + Firefox)
+├── mpdm/                        The original Python version (engine, Tkinter UI, web)
+├── tests/                       Tests for the Python version
+├── install_host.py              Connects a browser to the Python version
+├── .github/workflows/release.yml  Builds every package and publishes a Release on a v* tag
+└── LICENSE                      MIT
+```
+
+## 3. Install
+
+Download the latest files from the
+**[Releases page](https://github.com/Thedeadji/My-Personal-Download-Manager/releases/latest)**.
+
+### Windows
+
+1. Download **`MPDM-Setup-<version>.exe`** and run it. Windows SmartScreen may warn
+   that the app is unrecognized (the installer isn't code-signed); choose
+   **More info → Run anyway**.
+2. The installer adds MPDM to the Start menu (optional desktop shortcut), installs
+   the browser extension to `C:\Program Files\MPDM\extension`, and connects Firefox
+   automatically. No Visual C++ redistributable is needed.
+3. Start **MPDM**. Closing the window keeps it running in the tray; quit from the
+   tray icon's menu.
+
+Uninstall from *Settings → Apps*; it also disconnects the browsers.
+
+### Linux
+
+Pick one:
+
+| File | Works on | Notes |
 |---|---|---|
-| Get it | Windows installer (`MPDM-Setup-*.exe`), or build the Linux `.deb` (see `cpp/packaging/linux/README.md`) | Clone the repo and run it — **nothing to install** |
-| Needs | nothing extra on Windows | Python 3.9+ and `requests` |
-| Best for | everyday use | trying MPDM out, studying the code, running on a machine where you can't install software |
-| Desktop UI | full "Industrial" window, tray icon + quick panel, live download popup | simpler Tkinter window and download popup |
+| `MPDM-Qt-<version>-x86_64.AppImage` | any distro with glibc 2.39+ (Ubuntu 24.04+) | one file, nothing to install |
+| `MPDM-GTK-<version>-x86_64.AppImage` | glibc 2.43+ (Ubuntu 26.04, Fedora 44, Arch) | GNOME-native look, one file |
+| `mpdm-qt_<version>_amd64.deb` | Ubuntu 24.04+ / Debian 13+ | installs the Qt app |
+| `mpdm-gtk_<version>_amd64.deb` | Ubuntu 26.04+ | installs the GTK app (replaces `mpdm-qt`) |
 
-### Try it without installing (Python)
+```bash
+# AppImage
+chmod +x MPDM-Qt-*.AppImage && ./MPDM-Qt-*.AppImage
 
-If you just want to test MPDM, you don't need the installer. The Python version
-runs straight from the cloned folder — no admin rights, nothing copied into
-Program Files, no registry changes (unless you connect a browser, below).
+# or .deb
+sudo apt install ./mpdm-qt_*_amd64.deb
+```
+
+Install `ffmpeg` for video-stream grabbing, and `zenity` or `kdialog` for the
+extension's *Save as…* dialog. The `.deb` puts the extension in
+`/usr/share/mpdm/extension`; with an AppImage, download `mpdm-extension-<version>.zip`
+from the release and unzip it. To build from source instead, see
+[`cpp/packaging/linux/README.md`](cpp/packaging/linux/README.md).
+
+### Connect your browser
+
+**Chrome, Edge, Brave, Vivaldi, Opera**
+1. Open `chrome://extensions` (or `edge://extensions`, …) and turn on **Developer mode**.
+2. **Load unpacked** → choose the `extension` folder (Windows:
+   `C:\Program Files\MPDM\extension`; Linux: `/usr/share/mpdm/extension` or the unzipped
+   release zip). Copy the **ID** shown on the extension's card.
+3. In MPDM: **Settings → Browser → Connected browsers**, paste the ID, click **Add**.
+4. Reload the extension. Its popup → **Test connection to host** should say *Host connected ✓*.
+
+Repeat for each browser; they're all kept in the list.
+
+**Firefox (121+)**
+1. In MPDM: **Settings → Browser → Connect Firefox** (the Windows installer already did it).
+2. In Firefox open `about:debugging` → **This Firefox** → **Load Temporary Add-on…** and
+   pick the extension's `manifest.json`.
+
+Regular Firefox keeps unsigned add-ons only until it restarts; for a permanent install,
+sign the extension (free, unlisted) on addons.mozilla.org or use Firefox Developer
+Edition / Nightly with `xpinstall.signatures.required` set to `false`.
+
+The command-line equivalent of these steps is `mpdm_host --register --extension-id <ID>`
+or `mpdm_host --register --firefox` (`--list` and `--unregister` also exist).
+
+## 4. The Python version (try it without installing)
+
+The repository also contains MPDM's original **Python** implementation in `mpdm/`.
+It runs straight from the cloned folder: no installer, no admin rights, nothing
+copied into Program Files. It's handy for trying MPDM out or reading how a download
+manager works.
 
 ```bash
 git clone https://github.com/Thedeadji/My-Personal-Download-Manager.git
 cd My-Personal-Download-Manager
-python -m pip install -r requirements.txt   # only `requests`
+python -m pip install -r requirements.txt      # Python 3.9+, only `requests`
 
-python -m mpdm.ui                            # desktop window
-python -m mpdm get "<url>"                   # or download from the command line
-python -m mpdm.web                           # or a dashboard at http://127.0.0.1:8765
+python -m mpdm.ui                               # desktop window (Tkinter)
+python -m mpdm get "<url>" -n 8                  # download with 8 connections
+python -m mpdm grab "<playlist.m3u8>" -o out.mp4 # video stream to MP4 (needs ffmpeg)
+python -m mpdm clean --purge                     # remove leftovers of interrupted downloads
+python -m mpdm.web                               # web dashboard on http://127.0.0.1:8765
 ```
 
-- **Tkinter** (for the window) ships with the python.org installers on Windows and
-  macOS; on Linux install it with `sudo apt install python3-tk`.
-- **ffmpeg** is only needed for grabbing HLS/DASH video streams.
-- To stop, just close it. To remove it, delete the folder (and, if you like,
-  `~/.mypersonaldownloadmanager`).
+Useful `get` options: `-l 500k` speed limit, `--ua browser` browser User-Agent,
+`--proxy http://host:port`, `--incognito`, and `[1-10]` ranges in the URL for batches.
+Tkinter comes with the python.org installers on Windows and macOS; on Linux install
+`python3-tk`.
 
-**Testing the browser extension with the Python version** — load `extension/`
-unpacked (see *Browser integration* below), copy its ID, then:
+**Browser extension with the Python version:** load `extension/` unpacked as above,
+then run `python install_host.py --extension-id <ID> --browser chrome` (or `edge`,
+`firefox`, `all`).
 
-```bash
-python install_host.py --extension-id <THE_ID> --browser chrome   # or edge / firefox / all
-```
+**If the installed app is on the same computer:**
+- Both use the same browser-host name, so `install_host.py` takes that browser away
+  from the installed app (and connecting it in the app takes it back).
+  `python install_host.py --uninstall` disconnects both.
+- Both use the same `~/.mypersonaldownloadmanager` folder: don't run them at the same time.
+- The Python version is the original prototype. It doesn't have the tray icon and quick
+  panel, "ask" for existing files, the temporary folder, server file dates, several
+  connected browsers at once, or the extension's *Save as…* button.
 
-Things to know before mixing the two versions on one computer:
+Tests: `python tests/test_batch.py` (any `tests/test_*.py`; `test_engine.py` also needs
+`pip install pytest`).
 
-- **They share one browser connection.** Both register the same native-messaging
-  host name, so running `install_host.py` points that browser at the Python version
-  and the installed app stops receiving its downloads (and vice versa). To switch
-  back, open the installed app → **Settings → Browser → Connected browsers** and
-  add the extension ID again. `python install_host.py --uninstall` removes the
-  registration for *both* versions.
-- **They share one settings/queue folder** (`~/.mypersonaldownloadmanager`), so
-  don't run both at the same time.
-- **The Python version is the original prototype** and lacks the installed app's
-  newer features: the tray icon and quick panel, "ask me" for duplicate files, the
-  temporary download folder, server file dates, several browsers connected at
-  once, and the extension's **Save as…** button (it does nothing with the Python
-  host).
+## 5. Responsible use
 
-Tests: run any file directly, e.g. `python tests/test_batch.py`
-(`tests/test_engine.py` additionally needs `pip install pytest`).
+MPDM is a tool for downloading files you are allowed to download. Please:
 
-## Features
+- Download only content you have the right to, and respect copyright law and each
+  site's terms of service.
+- Don't use it to get around paywalls, DRM or other access controls. MPDM doesn't
+  break DRM; the only encrypted streams it handles are standard HLS AES-128 streams
+  whose keys the site itself serves to your browser.
+- Be gentle with servers: many parallel connections put more load on a site. Lower
+  the connection count or set a speed limit for small sites, and respect rate limits.
+- MPDM identifies itself honestly by default; switching to a browser User-Agent is
+  opt-in and only meant for servers that wrongly block download tools.
 
-- **Segmented downloading** — splits a file into N byte-ranges (HTTP `Range`
-  requests, RFC 7233) and fetches them over parallel connections, writing each
-  piece directly to its offset in a pre-allocated file (no temp-file merge).
-- **Dynamic segmentation** — when a connection finishes early, it splits the
-  segment with the most bytes left and steals half, so no connection sits idle
-  before the download ends (toggle in Settings).
-- **Resume** — per-segment progress is checkpointed to a `<file>.mpdm` sidecar,
-  so an interrupted download continues instead of restarting. Resume is only
-  reused when the server's size + `ETag` still match.
-- **Graceful fallback** — servers without range support get a single resumable
-  stream.
-- **Speed limiting** — cap the rate per download or globally across all
-  downloads, adjustable while a download runs (token-bucket throttle).
-- **Batch / wildcard URLs** — expand patterns like `img[1-100].jpg`,
-  `f[001-010].zip`, `ch[a-e]/[1-3].ts`, or a pasted list, into many downloads.
-- **Proxy support** — route requests through an HTTP/SOCKS proxy.
-- **Google Drive links** — share/`uc` URLs are resolved to the real file
-  (handles the "can't scan for viruses" confirmation page) and named correctly.
-- **Incognito downloads** — kept out of the app's history and saved into a hidden
-  `InvisibleFile` folder; still pausable/resumable while the app is open.
-- **Finish actions** — run a program, sleep, or shut down when the queue is done.
-- **Clipboard monitoring** — the desktop app can offer to grab copied links.
-- **Scheduler** — start/pause the queue or change the global speed limit at set
-  times (daily windows or a one-shot), e.g. download only during off-peak hours.
-- **Integrity check** — final file size is verified against `Content-Length`.
-- **Auto-sort by type** — finished downloads are filed into IDM-style subfolders
-  (Video, Music, Documents, Compressed, Programs); toggle in Settings, and point
-  any category at its own folder/drive (Settings → Category folders…).
-- **Persistent settings** — your preferences are saved to
-  `~/.mypersonaldownloadmanager/settings.json` and restored on the next launch.
-- **HLS/DASH grabber** — parses `.m3u8` / `.mpd` manifests, downloads the
-  segments concurrently, and muxes them to MP4 via `ffmpeg`. **AES-128**
-  encrypted HLS is supported (keys/IVs tracked per segment, with key rotation),
-  using a built-in pure-Python AES — no extra dependency required.
-- **Three ways to use it** — a library API, a CLI, and a minimal Tkinter GUI.
-
-## Install (Python version)
-
-```bash
-cd MyPersonalDownloadManager
-python -m pip install -r requirements.txt      # just: requests
-# ffmpeg is only needed for the `grab` (HLS/DASH) feature:
-#   Windows: https://ffmpeg.org/download.html  (add ffmpeg.exe to PATH)
-```
-
-## Use it
-
-### CLI
-
-```bash
-# Multi-connection file download into your Downloads folder
-python -m mpdm get "https://example.com/big.zip" -n 8
-
-# Choose output path and directory
-python -m mpdm get "https://example.com/big.zip" -o "C:\Users\me\Downloads\big.zip"
-
-# Cap the download speed (per download). Accepts 500k, 1.5m, 2g, or raw bytes.
-python -m mpdm get "https://example.com/big.zip" -l 500k
-
-# Some servers reject non-browser clients (HTTP 403). Opt into a browser
-# User-Agent (or pass any custom string). Default stays an honest MPDM UA.
-python -m mpdm get "https://example.com/big.zip" --ua browser
-
-# Batch/wildcard: download many at once (expands the [a-b] ranges)
-python -m mpdm get "https://example.com/img[1-50].jpg"
-
-# Through a proxy
-python -m mpdm get "https://example.com/big.zip" --proxy http://127.0.0.1:8080
-
-# Incognito: save into a hidden InvisibleFile folder, no history record
-python -m mpdm get "https://example.com/secret.zip" --incognito
-
-# Grab an HLS stream to MP4 (needs ffmpeg)
-python -m mpdm grab "https://example.com/playlist.m3u8" -o movie.mp4 --quality 720
-
-# Clean up orphaned resume sidecars (.mpdm) and temp files left by an
-# interrupted/killed download; add --purge to also delete the incomplete files
-python -m mpdm clean --purge
-```
-
-If a download is interrupted, just run the same `get` command again — MPDM finds
-the matching `.mpdm` sidecar and **resumes** it instead of making a new copy.
-
-### GUI (download manager)
-
-```bash
-python -m mpdm.ui          # the home window (same as python -m mpdm.ui.app)
-```
-
-A desktop download-manager window: a toolbar (Add URL, Resume, Stop/Pause,
-Remove, Clear finished, Open folder, **Scheduler**, Settings, plus Pause-all /
-Resume-all and a **global speed-limit** box), a category sidebar (All,
-Downloading, Finished, Video, Audio, Documents, Archives, Programs, Other), and a
-live table with per-row name / size / % / status / speed / time-left. Multiple
-downloads run at once (set the limit in Settings → "Max simultaneous downloads");
-each can be paused, resumed, removed, or given its **own speed limit** (right-click
-→ "Set speed limit…"). **Settings** also holds the global limit and the
-**browser User-Agent** toggle; **Scheduler** opens an editor for daily/one-shot
-rules (pause/resume the queue or change the global limit at set times). The list
-persists across restarts, and Add URL pre-fills from your clipboard. No license or
-registration — it's free and open.
-
-### Web UI (browser dashboard)
-
-```bash
-python -m mpdm.web                 # serve on http://127.0.0.1:8765 and open a browser
-python -m mpdm.web --port 9000 --no-open
-```
-
-A dependency-free local dashboard (standard-library `http.server` + one HTML
-page) over the same engine: add a URL, watch per-row size / progress / status /
-speed / time-left, Stop/Resume/Remove each, set a per-download or global speed
-limit, Pause-all / Resume-all / Clear finished. Binds to localhost only. Handy
-when you want a browser UI or a headless box you drive from another machine
-(use `--host 0.0.0.0` at your own risk on trusted networks).
-
-### Browser integration (extension + native host)
-
-Send downloads straight from Chrome/Edge to the MPDM engine — the standards-based
-way, with no kernel driver or memory hooks. The extension captures the URL plus
-cookies and referrer (so logged-in downloads work) and hands them to a small
-native-messaging host that drives the engine.
-
-```bash
-# 1) Load the unpacked extension from the `extension/` folder at chrome://extensions
-#    (Developer mode -> Load unpacked), then copy its extension ID.
-# 2) Register the native host:
-python install_host.py --extension-id <THE_ID> --browser chrome
-```
-
-Then right-click any link/media → “Download with MyPersonalDownloadManager”. A
-small **progress popup** opens for each browser download (filename, speed,
-downloaded / total, and Stop/Resume) — like IDM's download dialog. Set the
-environment variable `MDM_NO_POPUP=1` to download silently instead.
-
-On pages with video or audio, a **floating “⬇ Download media” panel** appears
-(like IDM's video panel): it lists the page's HTML5 media **and** any HLS/DASH
-streams sniffed from the network, and one click sends the chosen item to MPDM
-(HLS/DASH are grabbed and muxed to MP4). Toggle it with **“Show video download
-panel”** in the extension popup. Full steps are in `extension/README.md`.
-
-### Library
-
-```python
-from mpdm.engine import download
-from mpdm.config import Settings
-
-path = download(
-    "https://example.com/big.zip",
-    settings=Settings(connections=8),
-    progress_cb=lambda p: print(p.percent, p.speed_bps),
-)
-print("saved to", path)
-```
-
-## How it works
-
-```
-                 ┌──────────────┐
-   URL  ───────► │  http_client │  probe(): ranged GET of byte 0 →
-                 │   (probe)    │  learns size + Range support + filename
-                 └──────┬───────┘
-                        ▼
-                 ┌──────────────┐   plan_segments(): divide [0,size)
-                 │    engine    │   into N contiguous segments
-                 │ (segmented)  │
-                 └──────┬───────┘
-          ┌────────────┼────────────┐      each worker:
-          ▼            ▼            ▼       Range: bytes=start-end
-      worker 0     worker 1     worker N →  seek(start); write chunks
-          └────────────┼────────────┘       (progress checkpointed to .mpdm)
-                        ▼
-                pre-allocated output file  ──►  size verified ──► done
-```
-
-The stream grabber (`grabber.py`) reuses the same HTTP layer: it resolves a
-manifest (`hls.py` / `dash.py`) to a list of segment URLs, downloads them
-concurrently, then concatenates + remuxes to MP4 (`muxer.py`).
-
-## Project layout
-
-```
-MyPersonalDownloadManager/
-├── README.md
-├── LICENSE
-├── requirements.txt
-└── mpdm/
-    ├── __init__.py
-    ├── __main__.py        # python -m mpdm
-    ├── config.py          # Settings / defaults
-    ├── models.py          # Segment, Progress, TaskRecord, Status
-    ├── http_client.py     # probe() + ranged GET
-    ├── engine.py          # the segmented download core
-    ├── storage.py         # .mpdm resume sidecar
-    ├── hls.py             # m3u8 parser
-    ├── dash.py            # mpd parser
-    ├── muxer.py           # ffmpeg segment assembly
-    ├── grabber.py         # manifest → MP4 orchestration
-    ├── cli.py             # argparse CLI
-    └── ui/app.py          # Tkinter GUI stub
-└── tests/
-    └── test_engine.py     # offline unit tests
-```
-
-## Run the tests
-
-```bash
-python -m pytest tests/ -v      # or: python tests/test_engine.py
-```
-
-## Extending it (good next steps)
-
-- **SAMPLE-AES HLS**: the partial-encryption mode (AES-128 full-segment is
-  already supported); needs container-aware decryption — marked in `hls.py`.
-- **Standalone installer**: bundle into a single `.exe` with PyInstaller and an
-  Inno Setup / NSIS installer (detect/bundle ffmpeg; optionally register the
-  native host).
-- **Web UI**: an optional FastAPI + HTML dashboard over the same engine, as a
-  lighter-footprint alternative to the Tkinter window.
-
-## Responsible use
-
-Download only content you have the right to download, and respect each site's
-terms of service and applicable copyright law.
+Released under the [MIT License](LICENSE).
