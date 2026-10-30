@@ -315,20 +315,33 @@ static fs::path which(const std::string& name) {
     return {};
 }
 
+// The running AppImage file ("" when not inside one). Its runtime sets $APPIMAGE;
+// the host's own path is a temporary mount that disappears when it exits.
+static std::string appimage_file() {
+    const char* a = std::getenv("APPIMAGE");
+    return (a && *a) ? a : "";
+}
+
 // The GUI sits next to the host when installed (/usr/bin), or one level down in a
-// build tree (build-linux/mpdm_host + build-linux/gui/mpdm_gui).
+// build tree (build-linux/mpdm_host + build-linux/gui/mpdm_gui). Either desktop
+// front-end will do: the Qt one (mpdm_gui) or the GTK one (mpdm_gtk). Inside an
+// AppImage the GUI is the AppImage itself, launched through its own runtime.
 static fs::path find_gui() {
+    if (std::string a = appimage_file(); !a.empty()) return a;
     fs::path d = host_dir();
-    for (const fs::path& p : {d / "mpdm_gui", d / "gui" / "mpdm_gui", d.parent_path() / "bin" / "mpdm_gui"}) {
-        if (::access(p.c_str(), X_OK) == 0) return p;
+    for (const char* name : {"mpdm_gui", "mpdm_gtk"}) {
+        for (const fs::path& p : {d / name, d / "gui" / name, d / "gui-gtk" / name, d.parent_path() / "bin" / name})
+            if (::access(p.c_str(), X_OK) == 0) return p;
     }
-    return which("mpdm_gui");
+    for (const char* name : {"mpdm_gui", "mpdm_gtk"})
+        if (fs::path p = which(name); !p.empty()) return p;
+    return {};
 }
 
 static bool hand_off_to_app(const json& job, const std::string& job_id) {
     fs::path gui = find_gui();
     if (gui.empty()) {
-        log_line("handoff: mpdm_gui not found next to the host or on PATH");
+        log_line("handoff: no MPDM desktop app (mpdm_gui / mpdm_gtk) next to the host or on PATH");
         return false;
     }
     std::error_code ec;
@@ -548,6 +561,10 @@ static fs::path self_exe() {
     DWORD n = GetModuleFileNameW(nullptr, b, MAX_PATH);
     return fs::path(std::wstring(b, n));
 #else
+    // Browsers launch whatever the manifest names; for an AppImage that must be the
+    // .AppImage file (its AppRun routes browser launches to the host), not the
+    // short-lived mount this binary runs from.
+    if (const char* a = std::getenv("APPIMAGE"); a && *a) return fs::path(a);
     std::error_code ec;
     fs::path p = fs::read_symlink("/proc/self/exe", ec);
     return ec ? fs::path("mpdm_host") : p;

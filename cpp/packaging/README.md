@@ -1,5 +1,10 @@
 # Packaging the MPDM desktop app (Windows)
 
+> Releases are built by CI: pushing a `v*` tag runs
+> `.github/workflows/release.yml`, which does the steps below on `windows-latest`
+> (Qt 6.8, vcpkg, app-local MSVC runtime) and attaches `MPDM-Setup-<ver>.exe` to the
+> GitHub Release. The manual steps are for local builds.
+
 Produces a self-contained install of the Qt GUI (`MPDM.exe` + all Qt/vcpkg DLLs)
 and a Windows installer (`MPDM-Setup-<ver>.exe`).
 
@@ -22,6 +27,7 @@ cmake --build cpp/build-gui --config Release --target mpdm_gui
 DIST=cpp/build-gui/dist
 rm -rf "$DIST" && mkdir -p "$DIST"
 cp cpp/build-gui/gui/Release/mpdm_gui.exe "$DIST/MPDM.exe"
+cp cpp/build-gui/Release/mpdm_host.exe "$DIST/"
 cp cpp/build-gui/vcpkg_installed/x64-windows/bin/*.dll "$DIST/"
 "C:/Qt/6.12.0/msvc2022_64/bin/windeployqt.exe" --release --no-translations --compiler-runtime "$DIST/MPDM.exe"
 ```
@@ -31,7 +37,7 @@ cp cpp/build-gui/vcpkg_installed/x64-windows/bin/*.dll "$DIST/"
 ```sh
 "$LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe" \
   /DDistDir="<abs>\cpp\build-gui\dist" \
-  /DOutDir="<abs>\cpp\build-gui" \
+  /DOutDir="<abs>\cpp\build-gui" /DAppVersion=1.2.0 \
   cpp/packaging/mpdm.iss
 ```
 Output: `cpp/build-gui/MPDM-Setup-1.0.0.exe` — installs to Program Files, adds a

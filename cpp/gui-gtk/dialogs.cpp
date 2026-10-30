@@ -232,7 +232,7 @@ void App::show_about() {
     adw_about_dialog_set_application_name(ab, "MyPersonalDownloadManager");
     adw_about_dialog_set_application_icon(ab, "mpdm");
     adw_about_dialog_set_developer_name(ab, "MPDM");
-    adw_about_dialog_set_version(ab, "1.0.0");
+    adw_about_dialog_set_version(ab, MPDM_VERSION);
     adw_about_dialog_set_comments(ab, "A multi-connection download manager with resume, scheduling, "
                                       "speed limits and HLS/DASH stream grabbing.");
     adw_about_dialog_set_license_type(ab, GTK_LICENSE_MIT_X11);

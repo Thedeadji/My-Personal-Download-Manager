@@ -1,0 +1,206 @@
+# Build MPDM for every platform and publish a GitHub Release.
+#
+# Push a tag like v1.2.0 -> builds, then a release "MPDM 1.2.0" with:
+#   MPDM-Setup-1.2.0.exe                 Windows installer (Qt app + browser host + extension)
+#   MPDM-Qt-1.2.0-x86_64.AppImage        Linux, Qt app, one file, any distro (glibc >= 2.39)
+#   MPDM-GTK-1.2.0-x86_64.AppImage       Linux, GTK4/libadwaita app, one file (glibc >= 2.43)
+#   mpdm-qt_1.2.0_amd64.deb              Ubuntu 24.04+ / Debian 13+
+#   mpdm-gtk_1.2.0_amd64.deb             Ubuntu 26.04+
+#   mpdm-extension-1.2.0.zip             the browser extension (load unpacked)
+# Run it from the Actions tab (workflow_dispatch) to get the same files as
+# build artifacts, versioned 0.0.<run number>, without publishing a release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building MPDM $v"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Set up vcpkg
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          "$VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-cache
+          key: vcpkg-x64-windows-${{ hashFiles('cpp/vcpkg.json') }}
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake -S cpp -B cpp/build-gui -G "Visual Studio 17 2022" -A x64 \
+            -DMPDM_BUILD_GUI=ON -DMPDM_VERSION="$VERSION" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+          cmake --build cpp/build-gui --config Release --parallel --target mpdm_gui mpdm_host mpdm_tests
+          cpp/build-gui/Release/mpdm_tests.exe
+
+      - name: Assemble the app folder
+        shell: bash
+        run: |
+          dist=cpp/build-gui/dist
+          rm -rf "$dist" && mkdir -p "$dist"
+          cp cpp/build-gui/gui/Release/mpdm_gui.exe "$dist/MPDM.exe"
+          cp cpp/build-gui/Release/mpdm_host.exe "$dist/"
+          cp cpp/build-gui/vcpkg_installed/x64-windows/bin/*.dll "$dist/"
+          "$QT_ROOT_DIR/bin/windeployqt.exe" --release --no-translations "$dist/MPDM.exe"
+          # App-local MSVC runtime, so a fresh Windows needs no VC++ redistributable.
+          vs="$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath)"
+          crt="$(ls -d "$vs"/VC/Redist/MSVC/*/x64/Microsoft.VC143.CRT | tail -1)"
+          cp "$crt"/*.dll "$dist/"
+          ls "$dist"
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DAppVersion=$env:VERSION" `
+            "/DDistDir=$PWD\cpp\build-gui\dist" `
+            "/DExtDir=$PWD\extension" `
+            "/DOutDir=$PWD\out" `
+            cpp\packaging\mpdm.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/*.exe
+          if-no-files-found: error
+
+  linux-qt:
+    needs: version
+    # The oldest supported Ubuntu that has every dependency: the AppImage runs on
+    # anything with this glibc or newer.
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ pkg-config dpkg-dev file curl \
+            qt6-base-dev qt6-base-dev-tools qt6-wayland libgl1-mesa-dev \
+            libcurl4-openssl-dev nlohmann-json3-dev libpugixml-dev libssl-dev libcpp-httplib-dev
+      - name: Build
+        run: |
+          cmake -S cpp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DMPDM_BUILD_GUI=ON -DMPDM_VERSION="$VERSION"
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+      - name: Package (.deb + AppImage)
+        run: |
+          mkdir -p out
+          (cd build && cpack -G DEB) && mv build/*.deb out/
+          QMAKE=/usr/lib/qt6/bin/qmake cpp/packaging/linux/build-appimage.sh qt build out
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-qt
+          path: out/*
+          if-no-files-found: error
+
+  linux-gtk:
+    needs: version
+    # GTK 4.16+ and libadwaita 1.6+ first ship together in Ubuntu 26.04.
+    runs-on: ubuntu-26.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ pkg-config dpkg-dev file curl \
+            libgtkmm-4.0-dev libadwaita-1-dev libglib2.0-bin librsvg2-common \
+            gsettings-desktop-schemas adwaita-icon-theme \
+            libcurl4-openssl-dev nlohmann-json3-dev libpugixml-dev libssl-dev libcpp-httplib-dev
+      - name: Build
+        run: |
+          cmake -S cpp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DMPDM_BUILD_GTK_GUI=ON -DMPDM_VERSION="$VERSION"
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+      - name: Package (.deb + AppImage)
+        run: |
+          mkdir -p out
+          (cd build && cpack -G DEB) && mv build/*.deb out/
+          cpp/packaging/linux/build-appimage.sh gtk build out
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-gtk
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, windows, linux-qt, linux-gtk]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Zip the browser extension
+        run: |
+          (cd extension && zip -r "../dist/mpdm-extension-$VERSION.zip" .)
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        if: github.ref_type != 'tag'
+        with:
+          name: mpdm-${{ env.VERSION }}
+          path: dist/*
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: MPDM ${{ env.VERSION }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

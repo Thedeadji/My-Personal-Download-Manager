@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# MPDM AppImage entry point. The one .AppImage file is the desktop app, the
+# browser native-messaging host and the CLI:
+#   MPDM.AppImage                    -> the desktop app (@GUI_BIN@)
+#   MPDM.AppImage chrome-extension://<id>/        (Chrome/Edge/Brave launching the host)
+#   MPDM.AppImage <manifest> mpdm@...             (Firefox launching the host)
+#   MPDM.AppImage --host <args>      -> mpdm_host, e.g. --host --register --firefox
+#   MPDM.AppImage --cli <args>       -> the mpdm command-line downloader
+HERE="$(dirname "$(readlink -f "$0")")"
+export APPDIR="${APPDIR:-$HERE}"
+
+# Library/plugin environment written by the linuxdeploy plugins (Qt or GTK).
+for hook in "$HERE"/apprun-hooks/*.sh; do
+    [ -f "$hook" ] && . "$hook"
+done
+
+case "$1" in
+    chrome-extension://*) exec "$HERE/usr/bin/mpdm_host" "$@" ;;
+    --host) shift; exec "$HERE/usr/bin/mpdm_host" "$@" ;;
+    --cli) shift; exec "$HERE/usr/bin/mpdm" "$@" ;;
+esac
+case "$2" in
+    mpdm@*) exec "$HERE/usr/bin/mpdm_host" "$@" ;;
+esac
+exec "$HERE/usr/bin/@GUI_BIN@" "$@"

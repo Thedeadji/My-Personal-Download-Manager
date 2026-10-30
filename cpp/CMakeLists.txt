@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
-project(mpdm LANGUAGES CXX)
+
+# Release version; CI passes -DMPDM_VERSION=<tag without the leading "v">.
+set(MPDM_VERSION "1.0.0" CACHE STRING "MPDM release version")
+string(REGEX MATCH "^[0-9]+(\\.[0-9]+)*" MPDM_VERSION_NUMERIC "${MPDM_VERSION}")
+project(mpdm VERSION ${MPDM_VERSION_NUMERIC} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -96,25 +100,44 @@ if(UNIX AND NOT APPLE)
     # The browser extension (load unpacked from /usr/share/mpdm/extension).
     install(DIRECTORY ${CMAKE_SOURCE_DIR}/../extension/ DESTINATION share/mpdm/extension)
 
-    set(CPACK_PACKAGE_NAME "mpdm")
+    # One .deb per desktop front-end. They install the same files (CLI, host,
+    # extension), so they replace each other via the virtual "mpdm-desktop".
+    if(MPDM_BUILD_GTK_GUI AND NOT MPDM_BUILD_GUI)
+        set(CPACK_PACKAGE_NAME "mpdm-gtk")
+    elseif(MPDM_BUILD_GUI AND NOT MPDM_BUILD_GTK_GUI)
+        set(CPACK_PACKAGE_NAME "mpdm-qt")
+    else()
+        set(CPACK_PACKAGE_NAME "mpdm")
+    endif()
     set(CPACK_PACKAGE_VENDOR "MPDM")
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
         "MyPersonalDownloadManager — multi-connection download manager")
-    set(CPACK_PACKAGE_VERSION "1.0.0")
+    set(CPACK_PACKAGE_VERSION "${MPDM_VERSION}")
     set(CPACK_PACKAGE_CONTACT "MPDM")
     set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
     set(CPACK_GENERATOR "DEB;TGZ")
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)  # <name>_<version>_<arch>.deb
     set(CPACK_DEBIAN_PACKAGE_SECTION "net")
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-    # System runtime deps for the .deb (GUI build pulls in Qt6).
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libcurl4, libssl3")
-    if(MPDM_BUILD_GUI)
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS
-            "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libqt6widgets6, libqt6network6")
-    endif()
-    if(MPDM_BUILD_GTK_GUI)
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS
-            "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libgtkmm-4.0-0, libadwaita-1-0")
+    set(CPACK_DEBIAN_PACKAGE_PROVIDES "mpdm-desktop")
+    set(CPACK_DEBIAN_PACKAGE_CONFLICTS "mpdm-desktop")
+    set(CPACK_DEBIAN_PACKAGE_REPLACES "mpdm-desktop")
+    # Runtime deps: computed from the binaries where dpkg-shlibdeps exists (the
+    # Debian/Ubuntu build hosts; library package names differ per release), else
+    # a best-effort list.
+    find_program(DPKG_SHLIBDEPS dpkg-shlibdeps)
+    if(DPKG_SHLIBDEPS)
+        set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+    else()
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libcurl4, libssl3")
+        if(MPDM_BUILD_GUI)
+            set(CPACK_DEBIAN_PACKAGE_DEPENDS
+                "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libqt6widgets6, libqt6network6")
+        endif()
+        if(MPDM_BUILD_GTK_GUI)
+            set(CPACK_DEBIAN_PACKAGE_DEPENDS
+                "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libgtkmm-4.0-0, libadwaita-1-0")
+        endif()
     endif()
     set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "ffmpeg")
     include(CPack)

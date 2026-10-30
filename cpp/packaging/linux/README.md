@@ -82,11 +82,47 @@ removes one entry, and a bare `mpdm_host --unregister` removes all of them.
 ## How browser downloads reach the app
 
 The extension talks to `mpdm_host`. For each download the host writes the job to
-`~/.mypersonaldownloadmanager/jobs/` and launches `mpdm_gui --background` fully
-detached (it looks next to itself, then in `gui/` of a build tree, then on `PATH`).
+`~/.mypersonaldownloadmanager/jobs/` and launches the desktop app with `--background`
+fully detached: `mpdm_gui` (Qt) or `mpdm_gtk` (GTK), looked up next to the host, in
+`gui/` or `gui-gtk/` of a build tree, then on `PATH`. Inside an AppImage it launches
+the `.AppImage` file itself.
 A running copy adopts the job (single instance), adds it to the queue and opens the
 download popup, so every setting applies the same way it does on Windows. If the
 GUI can't be found, the host downloads headlessly so nothing is lost.
+
+## Single-file AppImage
+
+`packaging/linux/build-appimage.sh qt|gtk <build-dir> [out-dir]` turns a built tree
+(configured with that one front-end) into `MPDM-Qt-<ver>-x86_64.AppImage` or
+`MPDM-GTK-<ver>-x86_64.AppImage`, using linuxdeploy and its Qt/GTK plugin (fetched
+into `<build-dir>/appimage-tools` on first use). The one file is everything:
+
+```bash
+chmod +x MPDM-GTK-*.AppImage
+./MPDM-GTK-*.AppImage                                  # the desktop app
+./MPDM-GTK-*.AppImage --host --register --firefox      # the browser host (any mpdm_host flag)
+./MPDM-GTK-*.AppImage --cli get https://example.com/f  # the command-line downloader
+```
+
+Registering a browser from Settings/Preferences → Browser writes the `.AppImage`
+path into the browser manifest, and the AppImage routes browser launches to the
+host (`packaging/linux/AppRun`). Keep the file where it is after connecting a
+browser; if you move it, connect the browser again. The extension itself isn't
+inside the AppImage: download `mpdm-extension-<ver>.zip` from the release and load
+the unzipped folder. The GTK AppImage needs glibc 2.43+ (Ubuntu 26.04, Fedora 44,
+Arch); the Qt one runs on glibc 2.39+ (Ubuntu 24.04 and newer).
+
+## Releases (GitHub Actions)
+
+`.github/workflows/release.yml` builds everything on a `v*` tag and publishes a
+GitHub Release: the Windows installer, both AppImages, `mpdm-qt` and `mpdm-gtk`
+`.deb` packages (only one can be installed; they replace each other) and the
+extension zip. Running the workflow by hand from the Actions tab produces the same
+files as build artifacts without publishing.
+
+```bash
+git tag v1.2.0 && git push origin v1.2.0
+```
 
 ## Platform differences (Linux vs Windows)
 

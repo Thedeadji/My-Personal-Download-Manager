@@ -18,6 +18,7 @@ add_executable(mpdm_gtk
 )
 target_include_directories(mpdm_gtk PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mpdm_gtk PRIVATE mpdm_core PkgConfig::GTKMM PkgConfig::LIBADWAITA)
+target_compile_definitions(mpdm_gtk PRIVATE MPDM_VERSION="${MPDM_VERSION}")
 
 # Linux: install the binary, a launcher whose name matches the application ID
 # (so GNOME ties windows and notifications to it) and the icon.

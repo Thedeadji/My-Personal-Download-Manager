@@ -11,8 +11,10 @@
 #ifndef ExtDir
   #define ExtDir "..\..\extension"
 #endif
+#ifndef AppVersion
+  #define AppVersion "1.0.0"
+#endif
 #define AppName "MyPersonalDownloadManager"
-#define AppVersion "1.0.0"
 #define AppExe "MPDM.exe"
 #define HostExe "mpdm_host.exe"
 #define Publisher "MPDM"
