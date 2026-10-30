@@ -27,10 +27,21 @@ async function getCookieHeader(url) {
   }
 }
 
+// Keep a name only if it looks like a real file (has an extension and isn't a
+// generic endpoint token like "download"/"uc"). Otherwise return "" so the host
+// names the file from the server's Content-Disposition (the real downloaded name)
+// instead of forcing a junk name like "download".
+function cleanName(name) {
+  name = (name || "").split(/[\\/]/).pop().trim();
+  if (!name || !/\.[A-Za-z0-9]{1,8}$/.test(name)) return "";
+  if (/^(download|uc|open|view|file|get|dl|export)$/i.test(name.replace(/\.[^.]*$/, ""))) return "";
+  return name;
+}
+
 function filenameFromUrl(url) {
   try {
     const u = new URL(url);
-    return decodeURIComponent(u.pathname.split("/").filter(Boolean).pop() || "");
+    return cleanName(decodeURIComponent(u.pathname.split("/").filter(Boolean).pop() || ""));
   } catch (e) {
     return "";
   }
@@ -111,15 +122,19 @@ async function queueJob(job) {
     sendToHost(job);
     return;
   }
-  // Stash the pending job and open a small confirmation window.
+  // Stash the pending job and open a small confirmation window. The timestamp
+  // lets a confirm window that the browser *restores* on a later launch (Edge's
+  // "continue where you left off" reopens extension popups) recognise itself as
+  // stale and close instead of re-prompting a download the user never actioned.
+  job.ts = Date.now();
   const { pending } = await chrome.storage.local.get({ pending: {} });
   pending[job.id] = job;
   await chrome.storage.local.set({ pending });
   chrome.windows.create({
     url: chrome.runtime.getURL(`confirm.html?id=${job.id}`),
     type: "popup",
-    width: 480,
-    height: 340,
+    width: 560,
+    height: 760,
   });
 }
 
@@ -197,7 +212,10 @@ async function sendToHost(job) {
   if (canon) job.url = canon;
   const cookie = await getCookieHeader(job.url);
   if (cookie) job.headers["Cookie"] = cookie;
-  if (!job.headers["User-Agent"]) job.headers["User-Agent"] = navigator.userAgent;
+  // "Identify as a web browser" (default on) sends the browser UA; when off, send
+  // no UA so the engine uses its honest default.
+  if (job.honestUA) delete job.headers["User-Agent"];
+  else if (!job.headers["User-Agent"]) job.headers["User-Agent"] = navigator.userAgent;
   job.type = "download";
   job.id = job.id || crypto.randomUUID().slice(0, 12);
   runJob(job);
@@ -217,13 +235,26 @@ function installContextMenu() {
   });
 }
 
+// Drop any confirmation jobs left pending from a previous session. A confirm
+// window the user never actioned leaves its job in storage; if the browser then
+// restores that window on the next launch, it would re-prompt (the "download
+// popup on reopening the browser" bug). Clearing on startup makes any restored
+// confirm window find no job and close itself.
+function clearStalePending() {
+  chrome.storage.local.set({ pending: {} }, () => {});
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   installContextMenu();
+  clearStalePending();
   chrome.storage.local.get({ intercept: false, confirm: true }, () => {});
 });
 // Also run when the service worker starts (browser launch), so a stale/missing
-// menu is corrected without needing a reinstall.
-chrome.runtime.onStartup.addListener(installContextMenu);
+// menu is corrected without needing a reinstall, and stale confirms are dropped.
+chrome.runtime.onStartup.addListener(() => {
+  installContextMenu();
+  clearStalePending();
+});
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== MENU_ROOT) return;
@@ -254,7 +285,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
   await queueJob({
     url,
-    filename: item.filename ? item.filename.split(/[\\/]/).pop() : filenameFromUrl(url),
+    filename: cleanName(item.filename) || filenameFromUrl(url),
     headers: { Referer: item.referrer || "" },
   });
 });
@@ -266,6 +297,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "startDownload" && msg.job) {
     sendToHost(msg.job);
     sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === "browseSaveAs") {
+    // The native host opens the system Save-As dialog and returns the chosen path.
+    try {
+      chrome.runtime.sendNativeMessage(HOST_NAME, { type: "browse", filename: msg.filename || "" }, (resp) => {
+        sendResponse({ path: (resp && resp.path) || "" });
+      });
+    } catch (e) {
+      sendResponse({ path: "" });
+    }
     return true;
   }
   if (msg.type === "setIntercept") {
