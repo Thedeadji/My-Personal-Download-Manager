@@ -81,6 +81,13 @@ if(MPDM_BUILD_GUI)
     add_subdirectory(gui)
 endif()
 
+# Desktop GUI (GTK4 + libadwaita via gtkmm) — the GNOME-native front-end. Builds
+# independently of the Qt GUI; enable with -DMPDM_BUILD_GTK_GUI=ON.
+option(MPDM_BUILD_GTK_GUI "Build the GTK4/libadwaita desktop GUI" OFF)
+if(MPDM_BUILD_GTK_GUI)
+    add_subdirectory(gui-gtk)
+endif()
+
 # ---- Linux packaging (install rules + CPack: .deb and .tar.gz) --------------
 # Windows is packaged with Inno Setup (see packaging/mpdm.iss); these rules are
 # Linux-only. Run packaging/linux/build-linux.sh, which builds then invokes cpack.
@@ -104,6 +111,10 @@ if(UNIX AND NOT APPLE)
     if(MPDM_BUILD_GUI)
         set(CPACK_DEBIAN_PACKAGE_DEPENDS
             "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libqt6widgets6, libqt6network6")
+    endif()
+    if(MPDM_BUILD_GTK_GUI)
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS
+            "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libgtkmm-4.0-0, libadwaita-1-0")
     endif()
     set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "ffmpeg")
     include(CPack)

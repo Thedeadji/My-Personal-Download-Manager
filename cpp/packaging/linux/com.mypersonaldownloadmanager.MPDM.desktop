@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MyPersonalDownloadManager
+GenericName=Download Manager
+Comment=Multi-connection download manager with HLS/DASH grabbing
+Exec=mpdm_gtk
+Icon=mpdm
+Terminal=false
+Categories=Network;FileTransfer;GTK;GNOME;
+Keywords=download;manager;accelerator;hls;dash;
+StartupNotify=true
+X-GNOME-UsesNotifications=true

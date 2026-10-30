@@ -36,6 +36,33 @@ sudo apt install cmake ninja-build g++ qt6-base-dev \
 # cpp-httplib: libhttplib-dev if packaged, otherwise build via vcpkg.
 ```
 
+## GTK4 / libadwaita GUI (GNOME-native)
+
+`gui-gtk/` is a second desktop front-end built with gtkmm 4 + libadwaita. It
+uses the same `mpdm_core` backend, downloads list and `settings.json` as the Qt
+GUI. Build either one, or both:
+
+```bash
+cd cpp
+cmake -S . -B build-gtk -G Ninja -DMPDM_BUILD_GTK_GUI=ON
+cmake --build build-gtk --target mpdm_gtk mpdm_host
+./build-gtk/gui-gtk/mpdm_gtk
+```
+
+Needs gtkmm-4.0 ≥ 4.14 and libadwaita ≥ 1.6 (`libgtkmm-4.0-dev libadwaita-1-dev`
+on Debian/Ubuntu, `gtkmm-4.0 libadwaita` on Arch). It installs `mpdm_gtk` plus
+`com.mypersonaldownloadmanager.MPDM.desktop`, named after the application ID so
+GNOME attributes its windows and notifications to it. Notes on behavior:
+
+- **Single instance** comes from D-Bus (GApplication): launching it again, or
+  `mpdm_gtk --background`, hands off to the running copy.
+- **No tray icon.** GTK 4 has no tray API. Closing the window keeps MPDM running
+  in the background, finished downloads raise desktop notifications, and
+  *Quit* (Ctrl+Q / main menu) really exits.
+- GUI-only preferences live in `~/.mypersonaldownloadmanager/gui-gtk.json`.
+- Dev screenshots: `MPDM_STATE_DIR=/tmp/mpdm-shot mpdm_gtk --demo --shot out.png`
+  (see `gui-gtk/main.cpp` for the other `--shot-*` targets).
+
 ## Browser integration
 
 Several browsers can be connected at once, and each registration adds to the list.
