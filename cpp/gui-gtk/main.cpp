@@ -13,6 +13,7 @@
 //   --shot-done <png>      progress window after a download completed
 //   --shot-prefs <page> <png>   preferences on a page (general, downloads, …)
 //   --shot-add <png> / --shot-remove <png>   dialogs
+//   MPDM_WIN_SIZE=880x920  main window size for the shot (narrow layouts)
 #include <cstring>
 #include <string>
 #include <vector>

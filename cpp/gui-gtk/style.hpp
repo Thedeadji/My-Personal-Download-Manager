@@ -51,6 +51,11 @@ progressbar.dl-progress.queued > trough > progress    { background-color: alpha(
 .sidebar-footer { padding: 12px 16px 14px 16px; }
 levelbar.storage > trough > block.filled { background-color: var(--accent-bg-color); }
 
+/* ---- bottom page switcher (Preferences on narrow windows) ----
+   Adwaita packs it edge to edge; give it room to breathe. */
+viewswitcherbar viewswitcher { margin: 8px 12px 12px 12px; }
+viewswitcherbar viewswitcher > button { margin: 0 3px; padding-top: 7px; padding-bottom: 7px; border-radius: 10px; }
+
 /* ---- progress window ---- */
 .hero-name { font-size: 1.15em; font-weight: 700; }
 .percent-figure { font-size: 1.6em; font-weight: 800; }

@@ -1,6 +1,8 @@
 #include "app.hpp"
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <future>
 
@@ -311,7 +313,9 @@ void App::run_shot() {
     auto out = shot_.out;
     // Offscreen backends may not tick the frame clock; skip transitions entirely.
     g_object_set(gtk_settings_get_default(), "gtk-enable-animations", FALSE, nullptr);
-    gtk_window_set_default_size(main_->window(), 1180, 760);
+    int ww = 1180, wh = 760;  // MPDM_WIN_SIZE=860x900 tries other window sizes
+    if (const char* ws = std::getenv("MPDM_WIN_SIZE")) std::sscanf(ws, "%dx%d", &ww, &wh);
+    gtk_window_set_default_size(main_->window(), ww, wh);
     present_main();
     std::string first_dl, first_stream, first_done;
     for (auto& it : manager_->ordered()) {
