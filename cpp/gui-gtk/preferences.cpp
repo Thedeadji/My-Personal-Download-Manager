@@ -2,12 +2,14 @@
 // Browser / Scheduler pages. Values are applied when the dialog closes (the
 // Adwaita instant-apply model; there is no Save/Cancel), except the style and
 // scheduler rules, which take effect immediately.
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <sstream>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "app.hpp"
 #include "mpdm/config.hpp"
@@ -59,7 +61,9 @@ struct State {
     std::vector<GtkWidget*> cat_rows;
     GtkWidget *conn_type, *conns, *dynseg, *retries, *retry_wait, *def_limit, *glob_limit;
     GtkWidget *proxy_mode, *proxy_type, *proxy_host, *proxy_port, *proxy_user, *proxy_pass, *verify_tls;
-    GtkWidget *ua, *ua_custom, *clip, *ext_id;
+    GtkWidget *ua, *ua_custom, *clip;
+    GtkWidget* hosts_group;
+    std::vector<GtkWidget*> host_rows;
     GtkWidget* rules_group;
     std::vector<GtkWidget*> rule_rows;
 };
@@ -197,20 +201,39 @@ std::string system_proxy() {
     return "";
 }
 
-std::string host_manifest_ext_id() {
-    const char* home = std::getenv("HOME");
-    if (!home) return "";
-    for (const char* dir : {"/.config/google-chrome", "/.config/chromium", "/.config/microsoft-edge"}) {
-        std::ifstream f(std::string(home) + dir + "/NativeMessagingHosts/com.mypersonaldownloadmanager.host.json");
-        if (!f) continue;
-        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        auto i = s.find("chrome-extension://");
-        if (i == std::string::npos) continue;
-        i += 19;
-        auto j = s.find('/', i);
-        if (j != std::string::npos) return s.substr(i, j - i);
+// Run mpdm_host (next to this binary, one level up in a build tree, or on PATH)
+// and collect its output. The host owns the browser manifests; --list prints
+// {"chromium": [...], "firefox": [...]}.
+struct HostResult { bool ok = false; std::string out; };
+
+HostResult run_host(const fs::path& exe_dir, std::vector<std::string> args) {
+    fs::path host;
+    std::error_code ec;
+    for (fs::path cand : {exe_dir / "mpdm_host", exe_dir.parent_path() / "mpdm_host"})
+        if (fs::exists(cand, ec)) { host = cand; break; }
+    if (host.empty())
+        if (char* p = g_find_program_in_path("mpdm_host")) { host = p; g_free(p); }
+    if (host.empty()) return {false, "mpdm_host wasn’t found next to MPDM or on PATH"};
+
+    std::string hs = host.string();
+    std::vector<char*> argv{hs.data()};
+    for (auto& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    char *out = nullptr, *err = nullptr;
+    int status = 0;
+    GError* e = nullptr;
+    HostResult r;
+    if (g_spawn_sync(nullptr, argv.data(), nullptr, G_SPAWN_DEFAULT, nullptr, nullptr, &out, &err, &status, &e)) {
+        r.ok = g_spawn_check_wait_status(status, nullptr);
+        r.out = std::string(out ? out : "") + (err ? err : "");
+    } else {
+        r.out = e ? e->message : "couldn’t run mpdm_host";
     }
-    return "";
+    while (!r.out.empty() && std::isspace((unsigned char)r.out.back())) r.out.pop_back();
+    if (e) g_error_free(e);
+    g_free(out);
+    g_free(err);
+    return r;
 }
 
 } // namespace
@@ -538,53 +561,91 @@ void App::show_preferences(const char* page_name) {
     st->verify_tls = switch_row(g, "Verify TLS certificates", nullptr, S.verify_tls);
 
     // ===== Browser =====
+    // Several browsers can be connected at once; each extension ID is one entry
+    // in the host's Chromium or Firefox list.
     GtkWidget* browser = add_page(pd, "browser", "Browser", "web-browser-symbolic");
-    g = add_group(browser, "Browser Extension",
-        "In chrome://extensions turn on Developer mode, choose Load unpacked and pick the "
-        "“extension” folder that ships with MPDM. Then paste the extension’s ID here and "
-        "register MPDM so the browser can hand it downloads.");
-    st->ext_id = entry_row(g, "Extension ID", host_manifest_ext_id());
-    GtkWidget* reg = adw_button_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(reg), "Register with Chrome &amp; Edge");
-    add_row(g, reg);
-    GtkWidget* unreg = adw_button_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(unreg), "Remove Registration");
-    add_row(g, unreg);
+    const fs::path exe_dir = fs::path(exe_path()).parent_path();
+    st->hosts_group = add_group(browser, "Connected Browsers", "These browsers can hand their downloads to MPDM.");
 
-    auto run_host = [this, ptoast](std::vector<std::string> args, const std::string& ok) {
-        fs::path dir = fs::path(exe_path()).parent_path();
-        fs::path host;
-        for (fs::path cand : {dir / "mpdm_host", dir.parent_path() / "mpdm_host"}) {
-            std::error_code ec;
-            if (fs::exists(cand, ec)) { host = cand; break; }
+    auto reload_hosts = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weak_hosts = reload_hosts;
+    *reload_hosts = [st, exe_dir, ptoast, weak_hosts] {
+        for (GtkWidget* r : st->host_rows) adw_preferences_group_remove(ADW_PREFERENCES_GROUP(st->hosts_group), r);
+        st->host_rows.clear();
+        auto add_row_to_group = [st](GtkWidget* row) {
+            add_row(st->hosts_group, row);
+            st->host_rows.push_back(row);
+        };
+        HostResult list = run_host(exe_dir, {"--list"});
+        auto j = nlohmann::json::parse(list.out, nullptr, /*allow_exceptions=*/false);
+        int shown = 0;
+        for (const char* family : {"chromium", "firefox"}) {
+            if (!j.is_object() || !j.contains(family) || !j[family].is_array()) continue;
+            bool ff = std::string(family) == "firefox";
+            for (auto& v : j[family]) {
+                if (!v.is_string()) continue;
+                std::string id = v.get<std::string>();
+                GtkWidget* row = adw_action_row_new();
+                adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+                adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), ff ? "Firefox" : "Chrome, Edge, Brave, Vivaldi");
+                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), id.c_str());
+                gtk_widget_add_css_class(row, "property");
+                adw_action_row_add_prefix(ADW_ACTION_ROW(row), gtk_image_new_from_icon_name("web-browser-symbolic"));
+                GtkWidget* del = icon_button("user-trash-symbolic", "Disconnect");
+                adw_action_row_add_suffix(ADW_ACTION_ROW(row), del);
+                on<>(del, "clicked", [exe_dir, id, ptoast, weak_hosts] {
+                    HostResult r = run_host(exe_dir, {"--unregister", "--extension-id", id});
+                    ptoast(r.ok ? std::string("Disconnected") : "Couldn’t disconnect: " + r.out);
+                    if (auto rh = weak_hosts.lock()) run_on_main([rh] { (*rh)(); });
+                });
+                add_row_to_group(row);
+                ++shown;
+            }
         }
-        if (host.empty()) { ptoast("mpdm_host wasn’t found next to MPDM"); return; }
-        std::vector<char*> argv;
-        std::string hs = host.string();
-        argv.push_back(hs.data());
-        for (auto& a : args) argv.push_back(a.data());
-        argv.push_back(nullptr);
-        char* err = nullptr;
-        int status = 0;
-        GError* e = nullptr;
-        bool spawned = g_spawn_sync(nullptr, argv.data(), nullptr, G_SPAWN_DEFAULT, nullptr, nullptr, nullptr, &err,
-                                    &status, &e);
-        if (spawned && g_spawn_check_wait_status(status, nullptr)) {
-            ptoast(ok);
-        } else {
-            std::string why = e ? e->message : (err && *err ? err : "mpdm_host reported an error");
-            while (!why.empty() && (why.back() == '\n' || why.back() == ' ')) why.pop_back();
-            ptoast("Couldn’t update the registration: " + why);
+        if (shown == 0) {
+            GtkWidget* none = adw_action_row_new();
+            adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(none), FALSE);
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(none),
+                                          list.ok ? "No browsers connected yet" : "Can’t read the connections");
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(none), list.ok ? "Add one below" : list.out.c_str());
+            gtk_widget_add_css_class(none, "dim-label");
+            add_row_to_group(none);
         }
-        if (e) g_error_free(e);
-        g_free(err);
     };
-    on<>(reg, "activated", [st, run_host, ptoast] {
-        std::string id = text(st->ext_id);
+    (*reload_hosts)();
+
+    g = add_group(browser, "Add a Browser",
+        "Chrome, Edge, Brave or Vivaldi: open chrome://extensions, turn on Developer mode, choose "
+        "Load unpacked and pick MPDM’s “extension” folder (/usr/share/mpdm/extension when installed), "
+        "then paste the ID it shows below. Repeat for each browser.\n\n"
+        "Firefox: choose Connect Firefox, then load the extension from about:debugging → This Firefox → "
+        "Load Temporary Add-on.");
+    GtkWidget* add_id = entry_row(g, "Extension ID", "");
+    adw_entry_row_set_show_apply_button(ADW_ENTRY_ROW(add_id), TRUE);
+    on<>(add_id, "apply", [add_id, exe_dir, ptoast, reload_hosts] {
+        std::string id = text(add_id);
         if (id.empty()) { ptoast("Paste the extension’s ID first"); return; }
-        run_host({"--register", "--chrome", "--edge", "--extension-id", id}, "Registered — reload the extension");
+        HostResult r = run_host(exe_dir, {"--register", "--extension-id", id});
+        if (r.ok) {
+            gtk_editable_set_text(GTK_EDITABLE(add_id), "");
+            ptoast("Connected — reload the extension in that browser");
+        } else {
+            ptoast("Couldn’t connect: " + r.out);
+        }
+        (*reload_hosts)();
     });
-    on<>(unreg, "activated", [run_host] { run_host({"--unregister", "--chrome", "--edge"}, "Registration removed"); });
+    GtkWidget* firefox = adw_button_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(firefox), "Connect Firefox");
+    adw_button_row_set_start_icon_name(ADW_BUTTON_ROW(firefox), "list-add-symbolic");
+    add_row(g, firefox);
+    on<>(firefox, "activated", [exe_dir, ptoast, reload_hosts] {
+        HostResult r = run_host(exe_dir, {"--register", "--firefox"});
+        if (!r.ok) ptoast("Couldn’t connect Firefox: " + r.out);
+        else if (r.out.find("not found") != std::string::npos)
+            ptoast("Saved, but no Firefox profile was found — start Firefox once, then try again");
+        else ptoast("Firefox connected — load the extension in Firefox if you haven’t");
+        (*reload_hosts)();
+    });
 
     g = add_group(browser, "Clipboard");
     st->clip = switch_row(g, "Watch the clipboard", "Offer to add links you copy", manager_->clip_monitor_pref);
