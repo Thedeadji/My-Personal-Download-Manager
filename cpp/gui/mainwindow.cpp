@@ -3,6 +3,8 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QListView>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -350,6 +352,17 @@ void MainWindow::devShotTrayIcons(const QString& out) {
     g.end();
     strip.save(out);
     qApp->quit();
+}
+
+void MainWindow::devShotDeselect(const QString& out) {
+    timer_.stop(); jobTimer_.stop();
+    auto a = manager_.add("https://example.com/mods.zip", "mods.zip", 0, {}, false, 0, false, false);
+    a->status = ST_PAUSED; a->size = 1400000000LL; a->downloaded = 680000000LL;
+    selId_ = QString::fromStdString(a->id);
+    refresh();                       // panel shows mods.zip
+    manager_.remove(a->id, false);   // ...then it's removed
+    refresh();                       // panel must return to "No selection"
+    QTimer::singleShot(400, [this, out] { this->grab().save(out); qApp->quit(); });
 }
 
 void MainWindow::devShotQuickPanel(const QString& out) {
@@ -1011,6 +1024,14 @@ void MainWindow::buildUi() {
     });
     selBtns->addWidget(selPause, 1);
     auto* selOpen = themed(new IndBtn("Open folder"));
+    connect(selOpen, &QAbstractButton::clicked, this, [this] {
+        // The selected file's folder; with nothing selected, the download folder.
+        QString dir = QString::fromStdString(manager_.settings.output_dir);
+        for (auto& it : manager_.ordered())
+            if (QString::fromStdString(it->id) == selId_ && !it->dest_path.empty())
+                dir = QString::fromStdString(std::filesystem::path(it->dest_path).parent_path().string());
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    });
     selBtns->addWidget(selOpen, 1);
     rv->addLayout(selBtns);
     main->addWidget(rightPanel);
@@ -1296,7 +1317,8 @@ void MainWindow::refresh() {
         setText("qcount", QString("%1 ITEMS").arg(shown.size()));
 
         // selected panel
-        if (!sel && !shown.empty()) { sel = shown.front(); selId_ = QString::fromStdString(sel->id); }
+        // No auto-pick: a removed (or never-made) selection leaves the panel empty
+        // until the user clicks a row.
         if (sel) {
             setText("sel_name", QString::fromStdString(sel->filename.empty() ? sel->url : sel->filename));
             setText("sel_host", QString::fromStdString(sel->url));
@@ -1317,6 +1339,19 @@ void MainWindow::refresh() {
             setText("kv_limit", sel->max_rate_bps ? human((double)sel->max_rate_bps) + "/s" : "Unlimited");
             setText("kv_resume", sel->status == ST_COMPLETED ? "Done" : "Saved");
             setText("kv_save_to", QString::fromStdString(sel->dest_path.empty() ? "—" : sel->dest_path));
+        } else {
+            // Nothing to select (queue empty / item removed): back to the idle state
+            // instead of leaving the last item's details on screen.
+            selId_.clear();
+            setText("sel_name", "No selection");
+            setText("sel_host", "");
+            setText("sel_pct", "—");
+            setText("sel_amt", "");
+            if (auto* st = findChild<QLabel*>("sel_state")) st->setText("");
+            if (auto* nt = findChild<QLabel*>("sel_note")) nt->hide();
+            if (selMeter_) selMeter_->set(0.0, P.cyan);
+            if (lanes_) lanes_->setData({});
+            for (const char* k : {"kv_speed", "kv_time_left", "kv_limit", "kv_resume", "kv_save_to"}) setText(k, "—");
         }
     }
 }
