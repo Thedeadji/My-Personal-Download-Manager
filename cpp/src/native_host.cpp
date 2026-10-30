@@ -32,6 +32,13 @@
 #include <io.h>
 #include <shobjidl.h>
 #pragma comment(lib, "ole32.lib")
+#else
+#include <cstdio>
+#include <cstdlib>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -276,6 +283,110 @@ static bool hand_off_to_app(const json& job, const std::string& job_id) {
     return true;  // job file written; a running instance will adopt it regardless
 }
 
+#else  // ---- POSIX (Linux) hand-off: same model as Windows --------------------
+
+static fs::path host_dir() {
+    std::error_code ec;
+    fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? fs::current_path() : exe.parent_path();
+}
+
+// Search $PATH for an executable name.
+static fs::path which(const std::string& name) {
+    const char* p = std::getenv("PATH");
+    if (!p) return {};
+    std::string path = p;
+    size_t start = 0;
+    while (start <= path.size()) {
+        size_t end = path.find(':', start);
+        if (end == std::string::npos) end = path.size();
+        fs::path cand = fs::path(path.substr(start, end - start)) / name;
+        if (!cand.empty() && ::access(cand.c_str(), X_OK) == 0) return cand;
+        start = end + 1;
+    }
+    return {};
+}
+
+// The GUI sits next to the host when installed (/usr/bin), or one level down in a
+// build tree (build-linux/mpdm_host + build-linux/gui/mpdm_gui).
+static fs::path find_gui() {
+    fs::path d = host_dir();
+    for (const fs::path& p : {d / "mpdm_gui", d / "gui" / "mpdm_gui", d.parent_path() / "bin" / "mpdm_gui"}) {
+        if (::access(p.c_str(), X_OK) == 0) return p;
+    }
+    return which("mpdm_gui");
+}
+
+static bool hand_off_to_app(const json& job, const std::string& job_id) {
+    fs::path gui = find_gui();
+    if (gui.empty()) {
+        log_line("handoff: mpdm_gui not found next to the host or on PATH");
+        return false;
+    }
+    std::error_code ec;
+    fs::path jobsDir = fs::path(state_dir()) / "jobs";
+    fs::create_directories(jobsDir, ec);
+    fs::path jobFile = jobsDir / (job_id + ".json");
+    try {
+        fs::path tmp = jobFile; tmp += ".tmp";
+        { std::ofstream f(tmp, std::ios::binary | std::ios::trunc); f << job.dump(); }
+        fs::rename(tmp, jobFile, ec);
+    } catch (...) {
+        return false;
+    }
+
+    // Launch the GUI fully detached (double fork + setsid) so the browser closing
+    // this host — which can signal our process group — never takes the app down.
+    // A running single-instance copy just adopts the job file and the new one exits.
+    pid_t pid = ::fork();
+    if (pid == 0) {
+        ::setsid();
+        if (::fork() == 0) {
+            // Don't inherit the native-messaging pipes.
+            int nul = ::open("/dev/null", 2);
+            if (nul >= 0) { ::dup2(nul, 0); ::dup2(nul, 1); ::dup2(nul, 2); if (nul > 2) ::close(nul); }
+            ::execl(gui.c_str(), gui.c_str(), "--background", (char*)nullptr);
+            ::_exit(127);
+        }
+        ::_exit(0);
+    }
+    if (pid > 0) ::waitpid(pid, nullptr, 0);
+    else log_line("handoff: fork failed");
+    log_line("handoff job " + job_id + " -> " + gui.string());
+    return true;
+}
+
+// Linux "Save as": use the desktop's own dialog via zenity (GNOME/GTK) or kdialog
+// (KDE). Returns "" if neither is available or the user cancels.
+static std::string run_capture(const std::string& cmd) {
+    std::string out;
+    FILE* p = ::popen(cmd.c_str(), "r");
+    if (!p) return out;
+    char buf[4096];
+    while (std::fgets(buf, sizeof buf, p)) out += buf;
+    int rc = ::pclose(p);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    return rc == 0 ? out : std::string();
+}
+
+static std::string shell_quote(const std::string& s) {
+    std::string q = "'";
+    for (char c : s) q += (c == '\'') ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+}
+
+static std::string browse_save_as(const std::string& suggested) {
+    std::string dir = default_download_dir();
+    std::string start = (fs::path(dir) / (suggested.empty() ? "download" : suggested)).string();
+    if (!which("zenity").empty())
+        return run_capture("zenity --file-selection --save --confirm-overwrite --title='Save as' --filename=" +
+                           shell_quote(start) + " 2>/dev/null");
+    if (!which("kdialog").empty())
+        return run_capture("kdialog --getsavefilename " + shell_quote(start) + " 2>/dev/null");
+    log_line("browse: neither zenity nor kdialog is installed");
+    return "";
+}
+
 #endif  // _WIN32
 
 #ifdef _WIN32
@@ -328,14 +439,12 @@ static void run_job(json job) {
     }
     job["id"] = job_id;
     send({{"type", "accepted"}, {"id", job_id}, {"filename", job.value("filename", "")}});
-#ifdef _WIN32
     if (hand_off_to_app(job, job_id)) {
         send({{"type", "done"}, {"id", job_id}});  // handed to the app, which owns it
         return;
     }
     // GUI not found -> download headlessly so the request isn't lost.
     log_line("app unavailable; headless fallback " + job_id);
-#endif
     run_job_headless(job);
 }
 
@@ -358,11 +467,7 @@ static int serve() {
         if (type == "ping") {
             send({{"type", "pong"}});
         } else if (type == "browse") {
-#ifdef _WIN32
             send({{"type", "browsed"}, {"path", browse_save_as(msg.value("filename", ""))}});
-#else
-            send({{"type", "browsed"}, {"path", ""}});
-#endif
         } else if (type == "download") {
             threads.emplace_back(run_job, msg);
         } else {

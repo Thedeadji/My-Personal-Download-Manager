@@ -95,9 +95,14 @@ static void test_categories() {
     CHECK(fs::path(categorized_dir(base, "a.xyz")) == fs::path(base));           // uncategorized
     CHECK(fs::path(categorized_dir(base, "a.mp4", false)) == fs::path(base));    // disabled
 
-    std::map<std::string, std::string> ov = {{"Video", (fs::path("D:") / "Movies").string()},
-                                             {"Audio", "tunes"}};
-    CHECK(fs::path(categorized_dir(base, "a.mp4", true, ov)) == fs::path("D:") / "Movies");  // abs
+    // An absolute override path (D:\Movies on Windows, /media/Movies elsewhere).
+#ifdef _WIN32
+    const fs::path absMovies = fs::path("D:\\") / "Movies";
+#else
+    const fs::path absMovies = fs::path("/media") / "Movies";
+#endif
+    std::map<std::string, std::string> ov = {{"Video", absMovies.string()}, {"Audio", "tunes"}};
+    CHECK(fs::path(categorized_dir(base, "a.mp4", true, ov)) == absMovies);  // abs
     CHECK(fs::path(categorized_dir(base, "a.mp3", true, ov)) == fs::path(base) / "tunes");   // rel
     CHECK(fs::path(categorized_dir(base, "a.zip", true, ov)) == fs::path(base) / "Compressed");
 }

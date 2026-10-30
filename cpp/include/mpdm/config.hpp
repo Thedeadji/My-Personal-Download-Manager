@@ -6,7 +6,11 @@
 namespace mpdm {
 
 inline constexpr const char* DEFAULT_USER_AGENT = "MyPersonalDownloadManager/0.1 (+research)";
-inline constexpr const char* INCOGNITO_DIRNAME = "InvisibleFile";
+#ifdef _WIN32
+inline constexpr const char* INCOGNITO_DIRNAME = "InvisibleFile";   // + hidden attribute
+#else
+inline constexpr const char* INCOGNITO_DIRNAME = ".InvisibleFile";  // dot = hidden on Linux/macOS
+#endif
 inline constexpr const char* BROWSER_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";

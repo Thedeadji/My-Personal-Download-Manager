@@ -27,6 +27,7 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextStream>
@@ -129,8 +130,8 @@ static std::string system_proxy_url() {
     }
     return hostport.isEmpty() ? std::string() : ("http://" + hostport).toStdString();
 #else
-    if (const char* e = std::getenv("http_proxy")) return e;
-    if (const char* e = std::getenv("HTTP_PROXY")) return e;
+    for (const char* v : {"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"})
+        if (const char* e = std::getenv(v); e && *e) return e;
     return "";
 #endif
 }
@@ -857,12 +858,19 @@ void MainWindow::openSettings() {
     hostStatus->setStyleSheet("background:transparent"); hostStatus->setWordWrap(true);
     bc->addWidget(hostStatus);
 
+    // The host sits next to the app when installed; in a build tree it's one level
+    // up (build/mpdm_host vs build/gui/mpdm_gui); otherwise look on PATH.
     auto hostExe = [] {
-        QString e = QCoreApplication::applicationDirPath() + "/mpdm_host";
 #ifdef _WIN32
-        e += ".exe";
+        const QString name = "mpdm_host.exe";
+#else
+        const QString name = "mpdm_host";
 #endif
-        return e;
+        QString dir = QCoreApplication::applicationDirPath();
+        for (const QString& c : {dir + "/" + name, dir + "/../" + name})
+            if (QFile::exists(c)) return QDir::cleanPath(c);
+        QString onPath = QStandardPaths::findExecutable(name);
+        return onPath.isEmpty() ? dir + "/" + name : onPath;
     };
     // Prefill the field with the currently-registered extension ID, if any.
     {

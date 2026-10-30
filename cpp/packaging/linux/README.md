@@ -4,9 +4,9 @@ MPDM's code is portable (Qt 6 + libcurl + `std::filesystem`; all Windows-specifi
 calls are `#ifdef _WIN32`-guarded). These files build it on Linux and package it as
 a `.deb` and a `.tar.gz`.
 
-> **Status:** the Linux build has not yet been CI-tested. Treat the first build as a
-> port bring-up — expect to install a dependency or two. The core engine, CLI,
-> Qt GUI, and web dashboard are expected to work; see *Platform differences* below.
+> **Status:** built and tested on Ubuntu 24.04 (Qt 6.4, GCC 13): unit tests pass,
+> the GUI runs, and browser downloads are handed from the native host to the app
+> (queue + download popup), exactly like on Windows. Qt 6.4+ is supported.
 
 ## Quick start
 
@@ -46,16 +46,27 @@ mpdm_host --register --extension-id <ID from chrome://extensions>
 
 This writes `~/.config/<browser>/NativeMessagingHosts/com.mypersonaldownloadmanager.host.json`
 for Chrome / Chromium / Edge (whichever are installed). Load `extension/` unpacked
-in the browser to get its ID first.
+in the browser to get its ID first (the `.deb` installs it to
+`/usr/share/mpdm/extension`). You can also register from the app: **Settings →
+Browser → Browser host**.
+
+## How browser downloads reach the app
+
+The extension talks to `mpdm_host`. For each download the host writes the job to
+`~/.mypersonaldownloadmanager/jobs/` and launches `mpdm_gui --background` fully
+detached (it looks next to itself, then in `gui/` of a build tree, then on `PATH`).
+A running copy adopts the job (single instance), adds it to the queue and opens the
+download popup, so every setting applies the same way it does on Windows. If the
+GUI can't be found, the host downloads headlessly so nothing is lost.
 
 ## Platform differences (Linux vs Windows)
 
-- **Autostart** ("Launch MPDM when the system starts") is written as
-  `~/.config/autostart/mpdm.desktop` instead of a registry Run key.
-- **System proxy** ("Use the system / browser proxy") reads the `http_proxy` /
-  `HTTPS_PROXY` environment variables (Windows reads the Internet Settings registry).
-- **Incognito** still keeps downloads out of history, but the folder isn't marked
-  hidden (there is no Windows hidden attribute on Linux).
-- The browser "Save as…" dialog from the confirm popup is Windows-only (it uses the
-  Windows file dialog); on Linux the download uses the chosen folder/name directly.
+- **Tray:** on desktops without a system tray (stock GNOME needs the AppIndicator
+  extension), the window is shown instead of hiding to a tray icon that isn't there.
+- **Autostart** is written as `~/.config/autostart/mpdm.desktop`.
+- **System proxy** reads `https_proxy` / `http_proxy` / `all_proxy` (Windows reads
+  the Internet Settings registry).
+- **Default download folder** follows `XDG_DOWNLOAD_DIR` (localized folder names work).
+- **Incognito** saves into the hidden `.InvisibleFile` folder.
+- **"Save as..."** in the extension uses `zenity` or `kdialog`.
 - `ffmpeg` must be on `PATH` for HLS/DASH stream grabbing.

@@ -22,5 +22,8 @@ PROGRESS.txt
 .DS_Store
 Thumbs.db
 
+# Linux build output
+cpp/build-linux/
+
 # Editor (machine-local)
 .vscode/

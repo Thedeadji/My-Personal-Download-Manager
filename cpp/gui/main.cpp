@@ -9,6 +9,7 @@
 #include <QPixmap>
 #include <QLocalServer>
 #include <QLocalSocket>
+#include <QSystemTrayIcon>
 #include <QTimer>
 
 #include <QAbstractItemView>
@@ -82,7 +83,9 @@ int main(int argc, char** argv) {
         int ww = 0, hh = 0;
         if (std::sscanf(ws, "%dx%d", &ww, &hh) == 2 && ww > 0 && hh > 0) w.resize(ww, hh);
     }
-    if (!background) w.show();  // --background: stay in the tray; jobs open popups
+    // --background: stay in the tray; jobs open popups. Without a system tray (e.g.
+    // stock GNOME) there'd be no way to reach a hidden window, so show it anyway.
+    if (!background || !QSystemTrayIcon::isSystemTrayAvailable()) w.show();
 
     // Dev: `--shot <path>` renders the window; `--shot-settings`/`--shot-scheduler`
     // open the dialog and render it; `--shot-popup[-stream] <png>` renders a popup.

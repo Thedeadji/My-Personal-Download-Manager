@@ -7,9 +7,9 @@
 #   - ffmpeg at runtime (for HLS/DASH grabbing)
 #
 # Debian/Ubuntu deps, for example:
-#   sudo apt install cmake ninja-build g++ qt6-base-dev libcurl4-openssl-dev \
-#        nlohmann-json3-dev libpugixml-dev libssl-dev ffmpeg
-#   (cpp-httplib: libhttplib-dev, or use vcpkg)
+#   sudo apt install cmake ninja-build g++ pkg-config qt6-base-dev libgl1-mesa-dev \
+#        libcurl4-openssl-dev nlohmann-json3-dev libpugixml-dev libssl-dev \
+#        libcpp-httplib-dev ffmpeg zenity
 #
 # Usage:
 #   ./build-linux.sh                         # system libraries
@@ -39,5 +39,6 @@ echo
 echo "Installers:"
 ls -1 "$BUILD"/*.deb "$BUILD"/*.tar.gz 2>/dev/null || echo "  (none produced — check the CPack output above)"
 echo
-echo "Install the .deb with:  sudo apt install ./$BUILD/mpdm-1.0.0-*.deb"
+echo "Install the .deb with:  sudo apt install $(realpath "$BUILD")/mpdm-1.0.0-*.deb"
+echo "Browser extension (load unpacked):  /usr/share/mpdm/extension"
 echo "Register the browser host after install:  mpdm_host --register --extension-id <ID>"

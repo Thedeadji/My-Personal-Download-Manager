@@ -7,11 +7,32 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 enable_testing()
 
-find_package(CURL CONFIG REQUIRED)
+# curl: vcpkg ships a CMake config; distro packages (Debian/Ubuntu) often don't,
+# so fall back to CMake's FindCURL module. Both provide CURL::libcurl.
+find_package(CURL CONFIG QUIET)
+if(NOT CURL_FOUND)
+    find_package(CURL REQUIRED)
+endif()
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(pugixml CONFIG REQUIRED)
-find_package(httplib CONFIG REQUIRED)
+# cpp-httplib: vcpkg ships a CMake config; Debian/Ubuntu ship only pkg-config;
+# otherwise use the single header. All paths end in the httplib::httplib target.
+find_package(httplib CONFIG QUIET)
+if(NOT TARGET httplib::httplib)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(CPPHTTPLIB QUIET IMPORTED_TARGET cpp-httplib)
+    endif()
+    if(TARGET PkgConfig::CPPHTTPLIB)
+        add_library(httplib::httplib ALIAS PkgConfig::CPPHTTPLIB)
+    else()
+        find_path(HTTPLIB_INCLUDE_DIR httplib.h REQUIRED)
+        add_library(mpdm_httplib INTERFACE)
+        target_include_directories(mpdm_httplib INTERFACE ${HTTPLIB_INCLUDE_DIR})
+        add_library(httplib::httplib ALIAS mpdm_httplib)
+    endif()
+endif()
 
 # Ported backend layers (grows per ../PORTING.md).
 add_library(mpdm_core
@@ -65,6 +86,8 @@ endif()
 # Linux-only. Run packaging/linux/build-linux.sh, which builds then invokes cpack.
 if(UNIX AND NOT APPLE)
     install(TARGETS mpdm mpdm_host RUNTIME DESTINATION bin)
+    # The browser extension (load unpacked from /usr/share/mpdm/extension).
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/../extension/ DESTINATION share/mpdm/extension)
 
     set(CPACK_PACKAGE_NAME "mpdm")
     set(CPACK_PACKAGE_VENDOR "MPDM")

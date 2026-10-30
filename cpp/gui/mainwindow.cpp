@@ -14,6 +14,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScreen>
+#include <QSessionManager>
 #include <QScrollArea>
 #include <QPainter>
 #include <QPainterPath>
@@ -62,7 +63,13 @@ const Palette* paletteForMode(const QString& mode) {
     if (mode == "light") return &kLight;
     if (mode == "dark") return &kDark;
     // system
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     return qApp->styleHints()->colorScheme() == Qt::ColorScheme::Light ? &kLight : &kDark;
+#else
+    // Qt < 6.5 (e.g. Ubuntu 24.04's 6.4) has no colorScheme(): infer it from the
+    // platform palette's window color instead.
+    return qApp->palette().color(QPalette::Window).lightness() > 128 ? &kLight : &kDark;
+#endif
 }
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -91,6 +98,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         resize(1300, 860);
     }
     manager_.start_scheduler();
+    // Session logout/shutdown (all platforms, incl. Linux session managers): let
+    // the app really quit instead of hiding to the tray and blocking the logout.
+    connect(qApp, &QGuiApplication::commitDataRequest, this, [this](QSessionManager&) { allowQuit_ = true; });
     // "Ask each time" duplicate policy: the engine (on a worker thread) asks us to
     // decide; marshal to the GUI thread and show the dialog there.
     manager_.set_duplicate_resolver([this](const std::string& path) -> std::string {
@@ -735,10 +745,11 @@ void MainWindow::buildUi() {
     // The title bar sits in the outer frame (above the scroll area), so the window
     // controls stay full-width and reachable even when the body scrolls at small
     // window sizes. Let the long name shrink so the controls never get pushed off.
+    // (Preferred = full width when there's room; minimum 0 = may shrink when not.)
     nameL->setMinimumWidth(0);
-    nameL->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    nameL->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     ctrlL->setMinimumWidth(0);
-    ctrlL->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    ctrlL->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     ofl->insertWidget(0, title);
 
     // Frameless move/resize: drag the title bar; resize from the outer frame's

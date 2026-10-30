@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 
@@ -13,11 +14,32 @@ namespace mpdm {
 
 namespace fs = std::filesystem;
 
+#ifndef _WIN32
+// XDG_DOWNLOAD_DIR from ~/.config/user-dirs.dirs (localized, e.g. ~/Unduhan), or "".
+static std::string xdg_download_dir(const std::string& home) {
+    const char* cfg = std::getenv("XDG_CONFIG_HOME");
+    fs::path f = (cfg && *cfg) ? fs::path(cfg) / "user-dirs.dirs" : fs::path(home) / ".config" / "user-dirs.dirs";
+    std::ifstream in(f);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind("XDG_DOWNLOAD_DIR=", 0) != 0) continue;
+        std::string v = line.substr(17);
+        if (v.size() >= 2 && v.front() == '"' && v.back() == '"') v = v.substr(1, v.size() - 2);
+        if (v.rfind("$HOME", 0) == 0) v = home + v.substr(5);
+        return v;
+    }
+    return "";
+}
+#endif
+
 std::string default_download_dir() {
     const char* home = std::getenv("USERPROFILE");
     if (!home) home = std::getenv("HOME");
     if (!home || !*home) return ".";  // last resort; relative but better than crashing
     fs::path dl = fs::path(home) / "Downloads";
+#ifndef _WIN32
+    if (std::string x = xdg_download_dir(home); !x.empty()) dl = x;
+#endif
     std::error_code ec;
     if (!fs::is_directory(dl, ec)) fs::create_directories(dl, ec);
     // Fall back to the home folder itself if Downloads can't be made.
