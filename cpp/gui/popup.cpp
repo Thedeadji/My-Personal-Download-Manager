@@ -14,6 +14,7 @@
 #include <filesystem>
 
 #include "mpdm/manager.hpp"
+#include "fileicon.hpp"
 #include "widgets.hpp"
 
 namespace fs = std::filesystem;
@@ -162,7 +163,7 @@ void PopupWindow::buildFile() {
 
     auto* fr = new QHBoxLayout; fr->setSpacing(12);
     auto* icon = new QLabel; icon->setFixedSize(52, 52); icon->setAlignment(Qt::AlignCenter);
-    icon->setText("▣"); icon->setFont(mono(22));
+    icon->setText("▣"); icon->setFont(mono(22)); iconL_ = icon;
     icon->setStyleSheet("background:" + P.well.name(QColor::HexArgb) + ";border:1px solid " + P.bevelDark.name() +
                         ";color:" + P.amber.name());
     fr->addWidget(icon);
@@ -236,7 +237,7 @@ void PopupWindow::buildStream() {
 
     auto* fr = new QHBoxLayout; fr->setSpacing(12);
     auto* icon = new QLabel; icon->setFixedSize(52, 52); icon->setAlignment(Qt::AlignCenter);
-    icon->setText("▤"); icon->setFont(mono(22));
+    icon->setText("▤"); icon->setFont(mono(22)); iconL_ = icon;
     icon->setStyleSheet("background:" + P.well.name(QColor::HexArgb) + ";border:1px solid " + P.bevelDark.name() +
                         ";color:" + P.amber.name());
     fr->addWidget(icon);
@@ -329,6 +330,15 @@ void PopupWindow::tick() {
         name = seg.isEmpty() ? QString::fromStdString(it->url) : seg;
     }
     if (nameL_) nameL_->setText(name);
+    // File-type icon: refresh when the real name arrives, and once more when a
+    // finished program can show its own icon.
+    QString iconKey = name + (it->status == ST_COMPLETED ? "|done" : "");
+    if (iconL_ && iconKey != iconName_) {
+        iconName_ = iconKey;
+        QString iname = (stream_ && !name.contains('.')) ? name + ".mp4" : name;
+        iconL_->setPixmap(fileIconFor(iname, it->status == ST_COMPLETED ? QString::fromStdString(it->dest_path)
+                                                                         : QString(), 40, *pal_));
+    }
     if (auto* h = findChild<QLabel*>("host")) {
         QString host = QString::fromStdString(it->url);
         QUrl u(QString::fromStdString(it->url)); if (!u.host().isEmpty()) host = u.host();

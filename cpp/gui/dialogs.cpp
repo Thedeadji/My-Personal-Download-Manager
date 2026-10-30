@@ -23,6 +23,8 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QProcess>
+#include <QPainterPath>
+#include <QPainter>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSystemTrayIcon>
@@ -46,6 +48,7 @@
 #include <filesystem>
 #include <memory>
 
+#include "fileicon.hpp"
 #include "mainwindow.hpp"
 #include "mpdm/config.hpp"
 #include "mpdm/manager.hpp"
@@ -306,9 +309,26 @@ void MainWindow::showFinishDialog(const std::shared_ptr<DownloadItem>& it) {
     QString nm = QString::fromStdString(it->filename.empty() ? it->url : it->filename);
 
     auto* row = new QHBoxLayout(); row->setSpacing(12);
-    auto* icon = new QLabel("✓"); icon->setFixedSize(40, 40); icon->setAlignment(Qt::AlignCenter);
-    icon->setFont(mono(20));
-    icon->setStyleSheet("background:" + hx(P.well) + ";border:1px solid " + hx(P.bevelDark) + ";color:" + hx(P.green));
+    // The file's own type icon, with a small green check badge in the corner.
+    auto* icon = new QLabel; icon->setFixedSize(48, 48); icon->setAlignment(Qt::AlignCenter);
+    icon->setStyleSheet("background:" + hx(P.well) + ";border:1px solid " + hx(P.bevelDark));
+    {
+        QString fname = nm.contains('/') ? QUrl(nm).fileName() : nm;
+        QPixmap base = fileIconFor(fname, path, 36, P);
+        const qreal dpr = base.devicePixelRatio();
+        QPixmap pm(QSize(44, 44) * dpr); pm.setDevicePixelRatio(dpr); pm.fill(Qt::transparent);
+        QPainter g(&pm);
+        g.setRenderHint(QPainter::Antialiasing, true);
+        g.drawPixmap(QPointF(2, 2), base);
+        QRectF badge(27, 27, 16, 16);
+        g.setPen(QPen(P.well, 2)); g.setBrush(P.green); g.drawEllipse(badge);
+        QPen ck(QColor("#0C1116"), 2); ck.setCapStyle(Qt::RoundCap); ck.setJoinStyle(Qt::RoundJoin);
+        g.setPen(ck); g.setBrush(Qt::NoBrush);
+        QPainterPath tick; tick.moveTo(31.2, 35.2); tick.lineTo(34.2, 38.0); tick.lineTo(39.0, 32.0);
+        g.drawPath(tick);
+        g.end();
+        icon->setPixmap(pm);
+    }
     row->addWidget(icon);
     auto* col = new QVBoxLayout(); col->setSpacing(2);
     auto* nameL = new QLabel(nm); nameL->setFont(barlow(14, 500));

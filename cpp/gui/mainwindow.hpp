@@ -38,7 +38,8 @@ public:
     void devShotTrayMenu(const QString& out);                // dev: render the tray right-click menu
     void devShotQuickPanel(const QString& out);              // dev: render the left-click quick panel
     void devShotTrayIcons(const QString& out);               // dev: render the tray icon states strip
-    void devShotDeselect(const QString& out);                // dev: select an item, remove it, render
+    void devShotDeselect(const QString& out);
+    void devShotIcons(const QString& out);                   // dev: queue of mixed file types                // dev: select an item, remove it, render
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;

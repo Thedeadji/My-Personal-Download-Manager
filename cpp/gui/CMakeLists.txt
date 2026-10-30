@@ -9,6 +9,7 @@ set(MPDM_GUI_SOURCES
     mainwindow.cpp
     dialogs.cpp
     popup.cpp
+    fileicon.cpp
     fonts.qrc
 )
 if(WIN32)

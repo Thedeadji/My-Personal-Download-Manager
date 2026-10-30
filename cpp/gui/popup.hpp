@@ -59,6 +59,8 @@ private:
     bool openedFolder_ = false;
 
     QLabel* titleL_ = nullptr;
+    QLabel* iconL_ = nullptr;      // file-type icon (set once the name is known)
+    QString iconName_;
     QLabel* nameL_ = nullptr;
     QLabel* pctL_ = nullptr;
     QLabel* amtL_ = nullptr;

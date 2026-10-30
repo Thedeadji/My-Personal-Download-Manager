@@ -41,6 +41,7 @@
 #  include <windows.h>
 #endif
 
+#include "fileicon.hpp"
 #include "popup.hpp"
 
 namespace mpdm::gui {
@@ -56,6 +57,18 @@ static QString htime(double s) {
     int t = (int)s, h = t / 3600, m = (t % 3600) / 60;
     return h ? QString("%1h %2m").arg(h).arg(m) : (m ? QString("%1 min").arg(m) : QString("%1s").arg(t));
 }
+// The file-type icon for a download: by its name (or the URL's last segment
+// before the name is known); finished programs show their own icon.
+static QPixmap itemIcon(const DownloadItem& it, int size, const Palette& P) {
+    QString name = QString::fromStdString(it.filename);
+    if (name.isEmpty() && !it.dest_path.empty())
+        name = QString::fromStdString(std::filesystem::path(it.dest_path).filename().string());
+    if (name.isEmpty()) name = QUrl(QString::fromStdString(it.url)).fileName();
+    if (it.stream && !name.contains('.')) name += ".mp4";
+    QString path = it.status == ST_COMPLETED ? QString::fromStdString(it.dest_path) : QString();
+    return fileIconFor(name, path, size, P);
+}
+
 static double mono_seconds() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
@@ -354,6 +367,21 @@ void MainWindow::devShotTrayIcons(const QString& out) {
     qApp->quit();
 }
 
+void MainWindow::devShotIcons(const QString& out) {
+    timer_.stop(); jobTimer_.stop();
+    const char* names[] = {"holiday-video.mp4", "podcast-ep12.mp3", "report-2026.pdf", "project-backup.zip",
+                           "setup-tool.exe", "thesis-draft.docx", "budget.xlsx", "dataset.xyz"};
+    std::string first;
+    for (const char* n : names) {
+        auto a = manager_.add(std::string("https://example.com/") + n, n, 0, {}, false, 0, false, false);
+        a->status = ST_PAUSED; a->size = 50000000LL; a->downloaded = 21000000LL;
+        if (first.empty()) first = a->id;
+    }
+    selId_ = QString::fromStdString(first);
+    refresh();
+    QTimer::singleShot(500, [this, out] { this->grab().save(out); qApp->quit(); });
+}
+
 void MainWindow::devShotDeselect(const QString& out) {
     timer_.stop(); jobTimer_.stop();
     auto a = manager_.add("https://example.com/mods.zip", "mods.zip", 0, {}, false, 0, false, false);
@@ -436,7 +464,9 @@ void MainWindow::showQuickPanel() {
         auto* rl = new QHBoxLayout(row); rl->setContentsMargins(6, 6, 4, 6); rl->setSpacing(10);
         auto* iconW = new Surface(Surface::Well); iconW->setPalette(&P); iconW->setFixedSize(28, 28);
         auto* iwl = new QHBoxLayout(iconW); iwl->setContentsMargins(0, 0, 0, 0);
-        iwl->addWidget(lab(it->stream ? "▤" : "▣", mono(13), P.amber), 0, Qt::AlignCenter);
+        auto* fic = new QLabel; fic->setPixmap(itemIcon(*it, 20, P));
+        fic->setStyleSheet("background:transparent");
+        iwl->addWidget(fic, 0, Qt::AlignCenter);
         rl->addWidget(iconW);
         auto* tcol = new QVBoxLayout; tcol->setSpacing(4);
         auto* name = lab(QString::fromStdString(it->filename.empty() ? it->url : it->filename), barlow(13), P.text);
@@ -1000,8 +1030,18 @@ void MainWindow::buildUi() {
     rh->addStretch(1);
     auto* selState = lab("", barlow(12), P.text2); selState->setObjectName("sel_state"); rh->addWidget(selState);
     rv->addLayout(rh);
-    auto* selName = lab("No selection", barlow(14, 500), P.text); selName->setObjectName("sel_name"); rv->addWidget(selName);
-    auto* selHost = lab("", mono(11), P.text3); selHost->setObjectName("sel_host"); rv->addWidget(selHost);
+    auto* selHead = new QHBoxLayout; selHead->setSpacing(10);
+    auto* selIcon = new QLabel; selIcon->setObjectName("sel_icon"); selIcon->setFixedSize(40, 40);
+    selIcon->setAlignment(Qt::AlignCenter);
+    selIcon->setStyleSheet("background:" + P.well.name(QColor::HexArgb));
+    selIcon->hide();
+    selHead->addWidget(selIcon, 0, Qt::AlignTop);
+    auto* selTexts = new QVBoxLayout; selTexts->setSpacing(2);
+    auto* selName = lab("No selection", barlow(14, 500), P.text); selName->setObjectName("sel_name"); selTexts->addWidget(selName);
+    auto* selHost = lab("", mono(11), P.text3); selHost->setObjectName("sel_host"); selTexts->addWidget(selHost);
+    selName->setMinimumWidth(0); selHost->setMinimumWidth(0);
+    selHead->addLayout(selTexts, 1);
+    rv->addLayout(selHead);
     auto* pctRow = new QHBoxLayout;
     auto* selPct = lab("—", mono(28, 500), P.text); selPct->setObjectName("sel_pct"); pctRow->addWidget(selPct, 0, Qt::AlignBottom);
     pctRow->addStretch(1);
@@ -1163,10 +1203,20 @@ void MainWindow::refresh() {
     // Notify from the tray when a download finishes while minimized.
     if (tray_ && newlyFinished && isHidden()) {
         int done = fin - lastFinished_;
-        tray_->showMessage("Download complete",
-                           done == 1 ? QString("1 download finished.")
-                                     : QString("%1 downloads finished.").arg(done),
-                           Logo::icon(), 4000);
+        // One file: name it and show its file-type icon (it isn't announced yet).
+        std::shared_ptr<DownloadItem> just;
+        if (done == 1)
+            for (auto& it : items)
+                if (it->status == ST_COMPLETED && !finishAnnounced_.count(it->id)) { just = it; break; }
+        if (just)
+            tray_->showMessage("Download complete",
+                               QString::fromStdString(just->filename.empty() ? just->url : just->filename),
+                               QIcon(itemIcon(*just, 48, P)), 4000);
+        else
+            tray_->showMessage("Download complete",
+                               done == 1 ? QString("1 download finished.")
+                                         : QString("%1 downloads finished.").arg(done),
+                               Logo::icon(), 4000);
     }
     lastFinished_ = fin;
 
@@ -1304,7 +1354,9 @@ void MainWindow::refresh() {
             h->setContentsMargins(10, 7, 10, 7); h->setSpacing(12);
             if (isSel) { auto* edge = new QLabel; edge->setFixedWidth(2); edge->setStyleSheet("background:" + P.amber.name()); h->insertWidget(0, edge); h->setContentsMargins(8, 7, 10, 7); }
             auto* iconWell = new QLabel; iconWell->setFixedSize(28, 28);
+            iconWell->setAlignment(Qt::AlignCenter);
             iconWell->setStyleSheet(QString("background:%1").arg(P.well.name(QColor::HexArgb)));
+            iconWell->setPixmap(itemIcon(*it, 22, P));
             h->addWidget(iconWell);
             auto* nmBox = new QVBoxLayout; nmBox->setSpacing(2);
             auto* nm = new QLabel(QString::fromStdString(it->filename.empty() ? it->url : it->filename));
@@ -1343,6 +1395,7 @@ void MainWindow::refresh() {
         // until the user clicks a row.
         if (sel) {
             setText("sel_name", QString::fromStdString(sel->filename.empty() ? sel->url : sel->filename));
+            if (auto* ic = findChild<QLabel*>("sel_icon")) { ic->setPixmap(itemIcon(*sel, 32, P)); ic->show(); }
             setText("sel_host", QString::fromStdString(sel->url));
             int pct = sel->percent() ? (int)*sel->percent() : 0;
             setText("sel_pct", QString("%1%").arg(pct));
@@ -1366,6 +1419,7 @@ void MainWindow::refresh() {
             // instead of leaving the last item's details on screen.
             selId_.clear();
             setText("sel_name", "No selection");
+            if (auto* ic = findChild<QLabel*>("sel_icon")) { ic->clear(); ic->hide(); }
             setText("sel_host", "");
             setText("sel_pct", "—");
             setText("sel_amt", "");

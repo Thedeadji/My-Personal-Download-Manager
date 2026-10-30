@@ -101,6 +101,8 @@ int main(int argc, char** argv) {
             w.devShotTrayMenu(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot-quickpanel") == 0 && i + 1 < argc) {
             w.devShotQuickPanel(argv[i + 1]);
+        } else if (std::strcmp(argv[i], "--shot-icons") == 0 && i + 1 < argc) {
+            w.devShotIcons(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot-deselect") == 0 && i + 1 < argc) {
             w.devShotDeselect(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot-trayicons") == 0 && i + 1 < argc) {
