@@ -9,6 +9,65 @@ This is **100% original code**. It is not derived from, and contains no part of,
 any commercial download manager. It was written as a study of how such tools
 work internally.
 
+## Two ways to run it
+
+MPDM comes in two forms that share the same design and the same browser extension:
+
+| | **Installed app** (C++ / Qt) | **Python version** |
+|---|---|---|
+| Get it | Windows installer (`MPDM-Setup-*.exe`), or build the Linux `.deb` (see `cpp/packaging/linux/README.md`) | Clone the repo and run it — **nothing to install** |
+| Needs | nothing extra on Windows | Python 3.9+ and `requests` |
+| Best for | everyday use | trying MPDM out, studying the code, running on a machine where you can't install software |
+| Desktop UI | full "Industrial" window, tray icon + quick panel, live download popup | simpler Tkinter window and download popup |
+
+### Try it without installing (Python)
+
+If you just want to test MPDM, you don't need the installer. The Python version
+runs straight from the cloned folder — no admin rights, nothing copied into
+Program Files, no registry changes (unless you connect a browser, below).
+
+```bash
+git clone https://github.com/Thedeadji/My-Personal-Download-Manager.git
+cd My-Personal-Download-Manager
+python -m pip install -r requirements.txt   # only `requests`
+
+python -m mpdm.ui                            # desktop window
+python -m mpdm get "<url>"                   # or download from the command line
+python -m mpdm.web                           # or a dashboard at http://127.0.0.1:8765
+```
+
+- **Tkinter** (for the window) ships with the python.org installers on Windows and
+  macOS; on Linux install it with `sudo apt install python3-tk`.
+- **ffmpeg** is only needed for grabbing HLS/DASH video streams.
+- To stop, just close it. To remove it, delete the folder (and, if you like,
+  `~/.mypersonaldownloadmanager`).
+
+**Testing the browser extension with the Python version** — load `extension/`
+unpacked (see *Browser integration* below), copy its ID, then:
+
+```bash
+python install_host.py --extension-id <THE_ID> --browser chrome   # or edge / firefox / all
+```
+
+Things to know before mixing the two versions on one computer:
+
+- **They share one browser connection.** Both register the same native-messaging
+  host name, so running `install_host.py` points that browser at the Python version
+  and the installed app stops receiving its downloads (and vice versa). To switch
+  back, open the installed app → **Settings → Browser → Connected browsers** and
+  add the extension ID again. `python install_host.py --uninstall` removes the
+  registration for *both* versions.
+- **They share one settings/queue folder** (`~/.mypersonaldownloadmanager`), so
+  don't run both at the same time.
+- **The Python version is the original prototype** and lacks the installed app's
+  newer features: the tray icon and quick panel, "ask me" for duplicate files, the
+  temporary download folder, server file dates, several browsers connected at
+  once, and the extension's **Save as…** button (it does nothing with the Python
+  host).
+
+Tests: run any file directly, e.g. `python tests/test_batch.py`
+(`tests/test_engine.py` additionally needs `pip install pytest`).
+
 ## Features
 
 - **Segmented downloading** — splits a file into N byte-ranges (HTTP `Range`
@@ -47,7 +106,7 @@ work internally.
   using a built-in pure-Python AES — no extra dependency required.
 - **Three ways to use it** — a library API, a CLI, and a minimal Tkinter GUI.
 
-## Install
+## Install (Python version)
 
 ```bash
 cd MyPersonalDownloadManager
