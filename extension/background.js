@@ -149,7 +149,7 @@ function runJob(job) {
     port = chrome.runtime.connectNative(HOST_NAME);
   } catch (e) {
     inFlight.delete(job.url);
-    notify("MPDM error", "Could not reach the host. Run install_host.py. " + e);
+    notify("MPDM error", "Could not reach the host. Install MPDM and run \"Register browser host\". " + e);
     return;
   }
 
@@ -167,7 +167,7 @@ function runJob(job) {
   });
   port.onDisconnect.addListener(() => {
     const err = chrome.runtime.lastError;
-    if (!settled && err) notify("MPDM host not reachable", (err.message || "disconnected") + " — run install_host.py");
+    if (!settled && err) notify("MPDM host not reachable", (err.message || "disconnected") + " — run \"Register browser host\"");
     inFlight.delete(job.url);
   });
 
