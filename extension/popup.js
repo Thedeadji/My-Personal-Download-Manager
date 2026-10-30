@@ -47,7 +47,9 @@ pingBtn.addEventListener("click", () => {
       statusEl.innerHTML = '<span class="ok">Host connected ✓</span>';
     } else {
       statusEl.innerHTML =
-        '<span class="bad">Host not reachable.</span> Run install_host.py, then reload.';
+        '<span class="bad">Host not reachable.</span> Install MPDM, then run the ' +
+        '"Register browser host" shortcut (or <code>mpdm_host --register</code>), ' +
+        'paste this extension\'s ID, and reload.';
     }
   });
 });
