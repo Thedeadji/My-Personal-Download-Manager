@@ -754,6 +754,28 @@ void MainWindow::buildUi() {
     connect(minBtn, &QPushButton::clicked, this, [this] { showMinimized(); });
     connect(maxBtn_, &QPushButton::clicked, this, [this] { toggleMaximize(); });
     connect(clsBtn, &QPushButton::clicked, this, [this] { close(); });
+
+    // Help: a "?" in a ring, left of the window controls (separated by a divider).
+    auto* helpBtn = winBtn("", false);
+    {
+        const int sz = 20;
+        qreal dpr = devicePixelRatioF();
+        QPixmap pm(QSize(sz, sz) * dpr); pm.setDevicePixelRatio(dpr); pm.fill(Qt::transparent);
+        QPainter g(&pm);
+        g.setRenderHint(QPainter::Antialiasing, true);
+        g.setPen(QPen(P.text2, 1.6));
+        g.drawEllipse(QRectF(1.5, 1.5, sz - 3, sz - 3));
+        QFont f = chakra(12, 600, 0.0); g.setFont(f);
+        g.drawText(QRectF(0, 0, sz, sz), Qt::AlignCenter, "?");
+        g.end();
+        helpBtn->setIcon(QIcon(pm));
+        helpBtn->setIconSize(QSize(sz, sz));
+    }
+    helpBtn->setToolTip("Help — what MPDM is, connecting a browser, settings");
+    connect(helpBtn, &QPushButton::clicked, this, [this] { openHelp(); });
+    auto* helpSep = new QWidget; helpSep->setFixedSize(1, 18);
+    helpSep->setStyleSheet("background:" + P.bevelLight.name());
+    tl->addWidget(helpBtn); tl->addSpacing(4); tl->addWidget(helpSep); tl->addSpacing(4);
     tl->addWidget(minBtn); tl->addWidget(maxBtn_); tl->addWidget(clsBtn);
     // The title bar sits in the outer frame (above the scroll area), so the window
     // controls stay full-width and reachable even when the body scrolls at small

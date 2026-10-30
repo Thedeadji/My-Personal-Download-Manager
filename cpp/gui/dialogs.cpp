@@ -34,6 +34,10 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextStream>
+#include <QTimer>
+#include <QGuiApplication>
+#include <QClipboard>
+#include <QTextBrowser>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -965,6 +969,9 @@ void MainWindow::openSettings() {
         if (cb->view()) cb->view()->setStyleSheet(popQss);
 
     nav->setCurrentRow(0);
+    // Opened from Help -> "Open Settings -> Browser": start on that section.
+    if (settingsStartPage_ >= 0 && settingsStartPage_ < nav->count()) nav->setCurrentRow(settingsStartPage_);
+    settingsStartPage_ = -1;
     // Dev: MPDM_SETTINGS_PAGE=<row> opens a given section (for screenshots).
     if (const char* pg = std::getenv("MPDM_SETTINGS_PAGE")) {
         int r = std::atoi(pg);
@@ -1134,6 +1141,324 @@ void MainWindow::openScheduler() {
     btns->addWidget(close);
     v->addLayout(btns);
 
+    dlg.exec();
+}
+
+
+// ---- Help window (the (?) button in the title bar) --------------------------
+
+// Where the browser extension lives: next to the app when installed (Windows),
+// /usr/share/mpdm/extension for the Linux .deb, or the repo's extension/ folder
+// when running from a build tree. "" if none is found (e.g. an AppImage).
+static QString find_extension_dir() {
+    QDir d(QCoreApplication::applicationDirPath());
+    QStringList cands = {d.filePath("extension"), d.filePath("../share/mpdm/extension")};
+    QDir up = d;
+    for (int i = 0; i < 6 && up.cdUp(); ++i) cands << up.filePath("extension");
+    for (const QString& c : cands)
+        if (QFile::exists(c + "/manifest.json")) return QDir::cleanPath(QDir(c).absolutePath());
+    return "";
+}
+
+void MainWindow::openHelp(int page) {
+    const Palette& P = *pal_;
+    QDialog dlg(this);
+    dlg.setWindowTitle("Help");
+    dlg.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+    dlg.setMinimumSize(560, 420);
+    dlg.resize(840, 640);
+    QPalette dp = dlg.palette(); dp.setColor(QPalette::Window, P.frame); dlg.setPalette(dp); dlg.setAutoFillBackground(true);
+
+    const QString brd = P.dark ? hx(P.bevelLight) : hx(P.bevelDark);
+    dlg.setStyleSheet(fieldQss(P) + QString(
+        "QListWidget{background:%1;color:%2;border:1px solid %3;outline:0;padding:4px;"
+        "font-family:'Chakra Petch';font-size:13px}"
+        "QListWidget::item{padding:11px 12px;border-left:3px solid transparent}"
+        "QListWidget::item:selected{background:%4;color:%5;border-left:3px solid %6}"
+        "QListWidget::item:hover:!selected{color:%7}"
+        "QTextBrowser{background:transparent;border:0;color:%7}")
+        .arg(hx(P.well), hx(P.text2), brd, hx(P.rowSelected), hx(P.amberText), hx(P.amber), hx(P.text)));
+
+    auto* outer = new QVBoxLayout(&dlg); outer->setContentsMargins(6, 6, 6, 6);
+    auto* panel = new Surface(Surface::Panel); panel->setPalette(pal_);
+    panel->setCursor(Qt::ArrowCursor);
+    outer->addWidget(panel);
+    auto* root = new QVBoxLayout(panel); root->setContentsMargins(0, 0, 0, 0); root->setSpacing(0);
+
+    // title bar
+    auto* bar = new QWidget; bar->setStyleSheet("background:transparent");
+    auto* barL = new QHBoxLayout(bar); barL->setContentsMargins(16, 13, 12, 13); barL->setSpacing(10);
+    auto* barLogo = new Logo(20); barLogo->setAttribute(Qt::WA_TransparentForMouseEvents);
+    barL->addWidget(barLogo);
+    auto* tt = new QLabel("Help"); tt->setFont(chakra(15, 600, 0.0));
+    tt->setStyleSheet("color:" + hx(P.text) + ";background:transparent");
+    tt->setAttribute(Qt::WA_TransparentForMouseEvents);
+    barL->addWidget(tt); barL->addStretch(1);
+    auto* xBtn = new QPushButton("✕");
+    xBtn->setCursor(Qt::PointingHandCursor); xBtn->setFixedSize(28, 28);
+    xBtn->setStyleSheet("QPushButton{background:transparent;border:0;color:" + hx(P.text3) +
+                        ";font-size:15px}QPushButton:hover{color:" + hx(P.text) + "}");
+    connect(xBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
+    barL->addWidget(xBtn);
+    root->addWidget(bar);
+    new FramelessChrome(&dlg, bar, &dlg);
+    auto* sep = new QFrame; sep->setFrameShape(QFrame::HLine);
+    sep->setStyleSheet("color:" + brd + ";background:" + brd + ";max-height:1px");
+    root->addWidget(sep);
+
+    auto* mid = new QHBoxLayout(); mid->setContentsMargins(16, 14, 16, 14); mid->setSpacing(16);
+    auto* nav = new QListWidget(); nav->setFixedWidth(196);
+    nav->setFocusPolicy(Qt::NoFocus);
+    nav->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    for (const char* n : {"About MPDM", "Connect a browser", "Settings explained"}) nav->addItem(n);
+    mid->addWidget(nav);
+    auto* stack = new QStackedWidget(); stack->setStyleSheet("background:transparent");
+    mid->addWidget(stack, 1);
+    root->addLayout(mid, 1);
+    connect(nav, &QListWidget::currentRowChanged, stack, &QStackedWidget::setCurrentIndex);
+
+    // Rich-text styling shared by every page (Qt supports a CSS subset).
+    const QString css = QString(
+        "body{color:%1;font-family:'Barlow';font-size:13px;}"
+        "h2{color:%2;font-family:'Chakra Petch';font-size:17px;font-weight:600;margin:0 0 6px 0;}"
+        "h3{color:%3;font-family:'Chakra Petch';font-size:12px;font-weight:600;margin:16px 0 4px 0;}"
+        "p{margin:0 0 8px 0;} li{margin:0 0 4px 0;}"
+        "b{color:%2;} .k{color:%4;font-weight:600;}"
+        "code{font-family:'JetBrains Mono';color:%4;background-color:%5;}"
+        ".dim{color:%6;}")
+        .arg(hx(P.text2), hx(P.text), hx(P.text3), hx(P.amberText), hx(P.well), hx(P.text3));
+    auto makeText = [&](const QString& html) {
+        auto* tb = new QTextBrowser();
+        tb->setOpenExternalLinks(true);
+        tb->document()->setDefaultStyleSheet(css);
+        tb->setHtml(html);
+        tb->setFrameShape(QFrame::NoFrame);
+        return tb;
+    };
+
+    // ---- About MPDM ----
+    stack->addWidget(makeText(QString(R"(
+<h2>What is MPDM?</h2>
+<p><b>MyPersonalDownloadManager</b> is a free, open-source download manager. It makes
+downloads faster by fetching each file over several connections at once, resumes
+downloads that were interrupted, saves HLS/DASH video streams as MP4, and can take over
+downloads from your web browser.</p>
+
+<h3>THE MAIN WINDOW</h3>
+<ul>
+<li><b>Top tiles</b> &mdash; total speed, how many downloads are running, how much you
+downloaded today, and whether the scheduler is on.</li>
+<li><b>Toolbar</b> &mdash; <span class="k">Add</span> (paste one or more links),
+<span class="k">Resume</span> / <span class="k">Pause</span> the selected download,
+<span class="k">Pause all</span>, <span class="k">Remove</span>,
+<span class="k">Clear done</span> (removes finished items from the list),
+<span class="k">Scheduler</span>, <span class="k">Settings</span>, a search box and a
+global speed <span class="k">Limit</span>.</li>
+<li><b>Categories</b> filters the queue (Video, Audio, Docs, &hellip;); <b>Status</b>
+counts downloads by state.</li>
+<li><b>Throughput</b> graphs network speed (cyan) and disk writes (amber).</li>
+<li><b>Queue</b> lists every download. Click a row to select it; double-click to open its
+download popup.</li>
+<li><b>Selected</b> shows the chosen download in detail, including one bar per
+connection.</li>
+</ul>
+
+<h3>DOWNLOAD POPUP</h3>
+<p>Each download can show a small window with its progress, speed and time left. Its
+buttons: <span class="k">&#8213;</span> minimize, <span class="k">&#8964;</span> hide it
+(the download keeps going), <span class="k">&#10005;</span> close it (the download also
+keeps going). Reopen it by double-clicking the row in the queue.</p>
+
+<h3>TRAY ICON</h3>
+<p>Closing the main window keeps MPDM running in the system tray. The icon shows a cyan bar
+while downloading, and a dot when something is paused (violet), failed (red) or finished
+(green). <b>Left-click</b> it for a quick panel of active downloads; <b>right-click</b> it
+for the menu, including <span class="k">Exit MPDM</span> to really quit.</p>
+
+<h3>WHERE FILES GO</h3>
+<p>Into your Downloads folder, sorted into Video, Music, Documents, Compressed and
+Programs. Change this in <b>Settings &rarr; Save locations</b>.</p>
+
+<p class="dim">MPDM is MIT-licensed and contains no code from any commercial download
+manager. Download only content you have the right to download.</p>
+)")));
+
+    // ---- Connect a browser ----
+    const QString extDir = find_extension_dir();
+    auto* connectPage = new QWidget(); connectPage->setStyleSheet("background:transparent");
+    auto* cv = new QVBoxLayout(connectPage); cv->setContentsMargins(0, 0, 0, 0); cv->setSpacing(10);
+    auto* extBox = new QLabel(extDir.isEmpty()
+        ? QString("The extension folder wasn't found next to the app. Download "
+                  "<b>mpdm-extension-&lt;version&gt;.zip</b> from the project's Releases page "
+                  "and unzip it.")
+        : QString("Extension folder:<br><code style=\"font-family:'JetBrains Mono'\">%1</code>")
+              .arg(QDir::toNativeSeparators(extDir).toHtmlEscaped()));
+    extBox->setWordWrap(true); extBox->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    extBox->setFont(barlow(13));
+    extBox->setStyleSheet("color:" + hx(P.text2) + ";background:" + hx(P.well) + ";border:1px solid " +
+                          brd + ";padding:10px");
+    cv->addWidget(extBox);
+    auto* btnRow = new QHBoxLayout(); btnRow->setSpacing(8);
+    auto* openExt = new IndBtn("Open folder"); openExt->setPalette(pal_);
+    auto* copyExt = new IndBtn("Copy path"); copyExt->setPalette(pal_);
+    auto* goBrowser = new IndBtn("Open Settings → Browser", true); goBrowser->setPalette(pal_);
+    openExt->setEnabled(!extDir.isEmpty()); copyExt->setEnabled(!extDir.isEmpty());
+    btnRow->addWidget(openExt); btnRow->addWidget(copyExt); btnRow->addStretch(1); btnRow->addWidget(goBrowser);
+    cv->addLayout(btnRow);
+    connect(openExt, &QAbstractButton::clicked, &dlg, [extDir] {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(extDir));
+    });
+    connect(copyExt, &QAbstractButton::clicked, &dlg, [extDir, copyExt] {
+        QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(extDir));
+        copyExt->setText("Copied ✓");
+    });
+    connect(goBrowser, &QAbstractButton::clicked, &dlg, [this, &dlg] {
+        dlg.accept();
+        settingsStartPage_ = 6;  // Browser
+        QTimer::singleShot(0, this, [this] { openSettings(); });
+    });
+    cv->addWidget(makeText(QString(R"(
+<h2>Connect a browser</h2>
+<p>The extension adds <b>Download with MyPersonalDownloadManager</b> to the right-click menu
+and hands downloads to this app. Install it once in each browser you use; every browser
+needs its own entry in MPDM.</p>
+
+<h3>CHROME, EDGE, BRAVE, VIVALDI, OPERA</h3>
+<ol>
+<li>Open the extensions page:
+  <code>chrome://extensions</code> &middot; <code>edge://extensions</code> &middot;
+  <code>brave://extensions</code> &middot; <code>vivaldi://extensions</code> &middot;
+  <code>opera://extensions</code></li>
+<li>Turn on <b>Developer mode</b> (a switch at the top right; in Edge it's in the left
+sidebar).</li>
+<li>Click <b>Load unpacked</b> and choose the extension folder shown above.</li>
+<li><b>Find the ID.</b> The extension now has a card on that page. Its ID is shown on the
+card as <code>ID: abcdefghijklmnopabcdefghijklmnop</code> &mdash; 32 letters from a to p.
+(In Edge, click <b>Details</b> on the card if you don't see it.) Select it and copy it.</li>
+<li>Click <b>Open Settings &rarr; Browser</b> above, paste the ID into
+<b>Connected browsers</b> and click <span class="k">Add</span>.</li>
+<li>Back on the extensions page, click the extension's reload button (&#8635;).</li>
+</ol>
+<p>Each browser gives the extension a different ID, so add the ID from every browser.
+They all stay in the list together.</p>
+
+<h3>FIREFOX</h3>
+<ol>
+<li>In MPDM: <b>Settings &rarr; Browser &rarr; Connect Firefox</b> (no ID needed; the
+Windows installer already did this).</li>
+<li>In Firefox open <code>about:debugging</code> &rarr; <b>This Firefox</b> &rarr;
+<b>Load Temporary Add-on&hellip;</b> and pick <code>manifest.json</code> inside the
+extension folder.</li>
+</ol>
+<p class="dim">Regular Firefox removes unsigned add-ons when it restarts, so repeat step 2
+after a restart (or use Firefox Developer Edition).</p>
+
+<h3>CHECK IT WORKS</h3>
+<p>Click the MPDM extension icon in the browser toolbar &rarr;
+<b>Test connection to host</b>. It should say <b>Host connected &#10003;</b>.</p>
+
+<h3>USING IT</h3>
+<ul>
+<li>Right-click a link, image or video &rarr; <b>Download with MyPersonalDownloadManager</b>.</li>
+<li>In the extension's popup: <b>Capture all browser downloads</b> sends every download to
+MPDM; <b>Ask before each download</b> shows a dialog where you can rename the file, pick a
+folder (<b>Save as&hellip;</b>), and set connections or a speed limit; <b>Show video
+download panel on pages</b> adds a floating list of the videos on a page.</li>
+</ul>
+
+<h3>"HOST NOT REACHABLE"?</h3>
+<ul>
+<li>The ID isn't in <b>Connected browsers</b> yet, or it was copied from a different
+browser &mdash; add the right one.</li>
+<li>Reload the extension after adding the ID.</li>
+<li>If MPDM was moved or reinstalled, remove the entry and add it again.</li>
+</ul>
+)")), 1);
+    stack->addWidget(connectPage);
+
+    // ---- Settings explained ----
+    stack->addWidget(makeText(QString(R"(
+<h2>Settings explained</h2>
+<p>Open <b>Settings</b> from the toolbar. Changes apply when you click
+<span class="k">Save changes</span>; <span class="k">Reset to defaults</span> restores the
+original values.</p>
+
+<h3>GENERAL</h3>
+<ul>
+<li><b>Theme</b> &mdash; System, Light or Dark.</li>
+<li><b>Max concurrent downloads</b> &mdash; how many files download at the same time; the rest
+wait in the queue.</li>
+<li><b>Always ask when removing items</b> &mdash; confirm before removing, with an option
+to delete the file too.</li>
+<li><b>Show a popup when a download finishes</b> &mdash; the &ldquo;download
+complete&rdquo; window.</li>
+<li><b>When all finish</b> &mdash; do nothing, run a command, sleep or shut down when the
+whole queue is done.</li>
+<li><b>Show the download popup when a download starts</b>, and <b>Start new downloads
+right away</b> (untick to only add them to the queue).</li>
+<li><b>Ignore the server's file time when resuming</b> &mdash; keep resuming even if the
+server reports a new modification date (size and ETag must still match).</li>
+<li><b>Launch MPDM when the system starts</b> &mdash; starts quietly in the tray.</li>
+</ul>
+
+<h3>SAVE LOCATIONS</h3>
+<ul>
+<li><b>Default folder</b> &mdash; where downloads go.</li>
+<li><b>Move each finished file into its category's folder</b> &mdash; Video, Music,
+Documents, Compressed, Programs.</li>
+<li><b>If a file already exists</b> &mdash; rename it (<code>name (1).ext</code>),
+overwrite, skip, or ask each time.</li>
+<li><b>Categories</b> &mdash; pick a category to see its file types and change its folder.
+<span class="k">Edit types</span> adds file extensions; <span class="k">New</span> creates
+your own category. <b>Remember the folder I last choose</b> updates the category's folder
+to wherever you last saved one.</li>
+<li><b>Set each file's date to the one the server reports</b> &mdash; keeps the
+original modification date.</li>
+<li><b>Temporary directory</b> &mdash; download parts there first, then move the
+finished file. Leave empty to download straight to the destination.</li>
+</ul>
+
+<h3>CONNECTIONS</h3>
+<ul>
+<li><b>Connection type</b> / <b>Connections per download</b> &mdash; more connections are
+usually faster, but some servers limit them. 8 suits most broadband lines.</li>
+<li><b>Dynamic segmentation</b> &mdash; a connection that finishes early helps the
+slowest one.</li>
+<li><b>Retry attempts on error</b> and <b>Wait between retries</b> (Automatic waits a
+little longer each time).</li>
+</ul>
+
+<h3>SPEED</h3>
+<ul>
+<li><b>Per-download limit</b> and <b>Global limit</b> &mdash; e.g. <code>500k</code>,
+<code>1.5m</code>; empty means unlimited. The toolbar's <b>Limit</b> sets the global one
+too.</li>
+</ul>
+
+<h3>SCHEDULER</h3>
+<ul>
+<li>Rules that pause, resume or change the speed limit at a time of day, daily or once
+&mdash; for example, download only at night.</li>
+</ul>
+
+<h3>PROXY</h3>
+<ul>
+<li><b>No proxy</b>, <b>Use the system / browser proxy</b>, or <b>Manual</b> (type,
+server, port, optional username and password; SOCKS5 is supported).</li>
+<li><b>Verify TLS certificates</b> &mdash; leave on unless you know why you need it off.</li>
+</ul>
+
+<h3>BROWSER</h3>
+<ul>
+<li><b>User-Agent</b> &mdash; MPDM identifies itself honestly by default. Choose
+<i>Browser</i> only for sites that refuse download tools.</li>
+<li><b>Clipboard monitoring</b> &mdash; offers to download links you copy.</li>
+<li><b>Connected browsers</b> &mdash; see <i>Connect a browser</i> in this Help.</li>
+</ul>
+)")));
+
+    nav->setCurrentRow(std::clamp(page, 0, nav->count() - 1));
+    if (const char* pg = std::getenv("MPDM_HELP_PAGE")) nav->setCurrentRow(std::clamp(std::atoi(pg), 0, 2));
     dlg.exec();
 }
 

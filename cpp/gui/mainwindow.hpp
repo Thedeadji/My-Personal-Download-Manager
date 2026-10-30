@@ -30,6 +30,7 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     void openSettings();
     void openScheduler();
+    void openHelp(int page = 0);  // the (?) button: About / Connect a browser / Settings explained
     void openPopupFor(const std::string& id, bool stream);  // live popup for a queue item
     void devShotPopup(const QString& out, bool stream);      // dev: render a popup to PNG
     void devShotGraph(const QString& out);                   // dev: render the graph with data
@@ -87,6 +88,7 @@ private:
     QVBoxLayout* rowsLay_ = nullptr;
 
     QString selId_;
+    int settingsStartPage_ = -1;   // Settings section to open on next openSettings()
     QString catFilter_ = "All";    // category dropdown filter for the queue list
     long long lastDiskBytes_ = 0;  // for disk-write-rate on the graph
     double lastDiskT_ = 0;
