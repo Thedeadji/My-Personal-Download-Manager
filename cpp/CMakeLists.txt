@@ -59,3 +59,29 @@ option(MPDM_BUILD_GUI "Build the Qt6 desktop GUI" OFF)
 if(MPDM_BUILD_GUI)
     add_subdirectory(gui)
 endif()
+
+# ---- Linux packaging (install rules + CPack: .deb and .tar.gz) --------------
+# Windows is packaged with Inno Setup (see packaging/mpdm.iss); these rules are
+# Linux-only. Run packaging/linux/build-linux.sh, which builds then invokes cpack.
+if(UNIX AND NOT APPLE)
+    install(TARGETS mpdm mpdm_host RUNTIME DESTINATION bin)
+
+    set(CPACK_PACKAGE_NAME "mpdm")
+    set(CPACK_PACKAGE_VENDOR "MPDM")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+        "MyPersonalDownloadManager — multi-connection download manager")
+    set(CPACK_PACKAGE_VERSION "1.0.0")
+    set(CPACK_PACKAGE_CONTACT "MPDM")
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+    set(CPACK_GENERATOR "DEB;TGZ")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "net")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    # System runtime deps for the .deb (GUI build pulls in Qt6).
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libcurl4, libssl3")
+    if(MPDM_BUILD_GUI)
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS
+            "${CPACK_DEBIAN_PACKAGE_DEPENDS}, libqt6widgets6, libqt6network6")
+    endif()
+    set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "ffmpeg")
+    include(CPack)
+endif()

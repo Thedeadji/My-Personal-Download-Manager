@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MyPersonalDownloadManager
+GenericName=Download Manager
+Comment=Multi-connection download manager with HLS/DASH grabbing
+Exec=mpdm_gui
+Icon=mpdm
+Terminal=false
+Categories=Network;FileTransfer;Qt;
+Keywords=download;manager;accelerator;hls;dash;
+StartupNotify=true

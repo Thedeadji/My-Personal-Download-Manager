@@ -21,3 +21,6 @@ PROGRESS.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Editor (machine-local)
+.vscode/
