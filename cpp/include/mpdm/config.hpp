@@ -57,6 +57,13 @@ struct Settings {
     // When resuming, ignore a changed server modification time (Last-Modified);
     // only the size + ETag must still match. Off = a changed date restarts it.
     bool resume_ignore_mtime = true;
+    // Keep retrying a failed download by itself: every auto_retry_minutes (0 = off),
+    // until it has been failing for auto_retry_hours (0 = keep trying forever).
+    int auto_retry_minutes = 5;
+    int auto_retry_hours = 24;
+    // Continue the downloads that were running when MPDM last closed (or the PC
+    // shut down). Paused downloads stay paused.
+    bool resume_on_start = true;
 };
 
 // Map a UA choice to a header string: ""/"default"/"honest" -> honest default;

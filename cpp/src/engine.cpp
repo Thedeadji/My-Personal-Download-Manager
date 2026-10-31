@@ -212,7 +212,12 @@ void Download::download_segment(Segment* seg) {
             get_range(url_, start, end, http_opts(), sink);
             { std::lock_guard<std::mutex> lk(file_mu_); file_.flush(); }
             if (seg->complete() || cancel_ || pause_) break;
-            // stream ended early -> loop re-requests the remainder
+            // Stream ended early -> loop re-requests the remainder. A response that
+            // brought nothing counts as a failed attempt (backoff, then give up)
+            // instead of re-requesting in a tight loop forever.
+            long long now;
+            { std::lock_guard<std::mutex> lk(mu_); now = seg->current_offset(); }
+            if (now == start) throw HttpError("no data received");
         } catch (const HttpError& e) {
             if (++attempt > settings_.max_retries) {
                 { std::lock_guard<std::mutex> lk(mu_); --active_; }
@@ -258,6 +263,14 @@ std::string Download::download_single() {
             get_range(url_, from, -1, http_opts(), sink);
             { std::lock_guard<std::mutex> lk(file_mu_); file_.flush(); }
             break;  // stream finished
+        } catch (const RangeIgnoredError&) {
+            // Can't continue mid-file on this server: start over from byte 0
+            // rather than appending a second copy after the partial data.
+            if (++attempt > settings_.max_retries)
+                throw DownloadError("single-stream download failed: server can't resume");
+            { std::lock_guard<std::mutex> lk(mu_); segments_[0].downloaded = 0; }
+            { std::lock_guard<std::mutex> lk(file_mu_); file_.close();
+              file_.open(dest_path_, std::ios::binary | std::ios::out | std::ios::trunc); }
         } catch (const HttpError& e) {
             if (++attempt > settings_.max_retries)
                 throw DownloadError(std::string("single-stream download failed: ") + e.what());
@@ -453,14 +466,34 @@ std::string Download::start() {
     }
 
     bool resumed = false;
-    if (auto rec = load_record(dest_path_)) {
-        std::error_code ec;
-        bool mtime_ok = settings_.resume_ignore_mtime || rec->last_modified == info_->last_modified;
-        if (rec->size == info_->size && rec->etag == info_->etag && mtime_ok && fs::exists(dest_path_, ec)) {
+    std::error_code rec_ec;
+    if (auto rec = load_record(dest_path_); rec && fs::exists(dest_path_, rec_ec)) {
+        const bool size_ok = rec->size == info_->size;
+        const bool mtime_ok = settings_.resume_ignore_mtime || rec->last_modified == info_->last_modified;
+        bool use = size_ok && rec->etag == info_->etag && mtime_ok;
+        long long have = 0;
+        for (const auto& seg : rec->segments) have += seg.downloaded;
+        // The server's file looks different from the one this progress belongs to.
+        // Don't silently throw away (possibly days of) progress: let the caller
+        // decide. Without a resolver keep the old behaviour (start over).
+        if (!use && have > 0 && resume_resolver_) {
+            ResumeConflict c;
+            c.path = dest_path_;
+            c.have = have;
+            c.old_size = rec->size;
+            c.new_size = info_->size;
+            c.size_changed = !size_ok;
+            const std::string choice = resume_resolver_(c);
+            if (choice == "keep") {
+                status_ = Status::Failed;
+                throw ResumeConflictError("stopped: the file on the server looks different now "
+                                          "(progress kept; Retry to decide again)");
+            }
+            if (choice == "continue" && size_ok) use = true;
+        }
+        if (use) {
             segments_.assign(rec->segments.begin(), rec->segments.end());
-            long long s = 0;
-            for (const auto& seg : segments_) s += seg.downloaded;
-            downloaded_at_start_ = s;
+            downloaded_at_start_ = have;
             resumed = !segments_.empty();
         }
     }

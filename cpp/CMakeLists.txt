@@ -50,6 +50,7 @@ add_library(mpdm_core
     src/engine.cpp
     src/manager.cpp
     src/aes128.cpp
+    src/checksum.cpp
     src/hls.cpp
     src/dash.cpp
     src/muxer.cpp

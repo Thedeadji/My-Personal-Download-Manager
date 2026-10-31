@@ -241,6 +241,62 @@ QString MainWindow::askDuplicate(const QString& path) {
     return choice;
 }
 
+// The saved progress of a download doesn't match the server's file any more
+// (size / ETag / date changed). Never drop it silently: Continue (same size only),
+// Start over, or Keep for now (stop and leave the partial file alone).
+QString MainWindow::askResumeConflict(const ResumeConflict& c) {
+    const Palette& P = *pal_;
+    auto size = [](long long n) {
+        const char* u[] = {"B", "KB", "MB", "GB", "TB"};
+        double v = (double)n; int i = 0;
+        while (v >= 1024 && i < 4) { v /= 1024; ++i; }
+        return QString::number(v, 'f', i ? 1 : 0) + " " + u[i];
+    };
+    QDialog dlg(this);
+    QVBoxLayout* v = nullptr;
+    dialogShell(dlg, P, "The file on the server changed", v);
+    dlg.setMinimumWidth(500);
+
+    QString path = QString::fromStdString(c.path);
+    int k = std::max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    QString name = k >= 0 ? path.mid(k + 1) : path;
+    QString text;
+    if (c.size_changed) {
+        text = QString("\"%1\" already has %2 downloaded, but the server's file is now %3 instead of %4, "
+                       "so that progress can't be used.")
+                   .arg(name, size(c.have), c.new_size ? size(*c.new_size) : QString("an unknown size"),
+                        c.old_size ? size(*c.old_size) : QString("the old size"));
+    } else {
+        text = QString("\"%1\" already has %2 downloaded, but the server now reports a different version "
+                       "of the file (same size, different tag or date).<br><br>"
+                       "If it's the same file (for example a mirror link), <b>Continue</b> keeps your "
+                       "progress. If the file really changed, <b>Start over</b>: continuing would give a "
+                       "broken file.")
+                   .arg(name, size(c.have));
+    }
+    auto* msg = new QLabel(text);
+    msg->setWordWrap(true); msg->setFont(barlow(13)); msg->setTextFormat(Qt::RichText);
+    msg->setStyleSheet("color:" + hx(P.text2) + ";background:transparent");
+    v->addWidget(msg);
+
+    QString choice = "keep";
+    auto* btns = new QHBoxLayout();
+    auto* keepB = new IndBtn("Keep for now"); keepB->setPalette(pal_);
+    keepB->setToolTip("Stop and leave the partial file as it is");
+    auto* restartB = new IndBtn("Start over"); restartB->setPalette(pal_);
+    btns->addWidget(keepB); btns->addStretch(1); btns->addWidget(restartB);
+    if (!c.size_changed) {
+        auto* contB = new IndBtn("Continue", true); contB->setPalette(pal_);
+        btns->addWidget(contB);
+        connect(contB, &QAbstractButton::clicked, &dlg, [&] { choice = "continue"; dlg.accept(); });
+    }
+    v->addLayout(btns);
+    connect(keepB, &QAbstractButton::clicked, &dlg, [&] { choice = "keep"; dlg.accept(); });
+    connect(restartB, &QAbstractButton::clicked, &dlg, [&] { choice = "restart"; dlg.accept(); });
+    dlg.exec();  // closing the dialog = keep
+    return choice;
+}
+
 // Remove the selected item, asking first whether to also delete the file on disk
 // (with a "remember my choice" opt-out that mirrors the Settings checkbox).
 void MainWindow::onRemove() {
@@ -525,6 +581,11 @@ void MainWindow::openSettings() {
     auto* ignoreMtime = new QCheckBox("Ignore the server's file time when resuming a download");
     ignoreMtime->setChecked(S.resume_ignore_mtime);
     gc->addWidget(ignoreMtime);
+    auto* resumeStart = new QCheckBox("Continue interrupted downloads when MPDM starts");
+    resumeStart->setToolTip("Downloads that were running when MPDM closed (or the PC shut down) carry on. "
+                            "Paused ones stay paused.");
+    resumeStart->setChecked(S.resume_on_start);
+    gc->addWidget(resumeStart);
 
     gc->addSpacing(4);
     gc->addWidget(sectionHead("STARTUP"));
@@ -767,6 +828,27 @@ void MainWindow::openSettings() {
     retryNote->setWordWrap(true); retryNote->setFont(barlow(12));
     retryNote->setStyleSheet("color:" + hx(P.text3) + ";background:transparent");
     cc->addWidget(retryNote);
+
+    cc->addSpacing(4);
+    cc->addWidget(sectionHead("AFTER A DOWNLOAD FAILS"));
+    auto* autoRetry = new QCheckBox("Keep retrying failed downloads automatically");
+    autoRetry->setChecked(S.auto_retry_minutes > 0);
+    cc->addWidget(autoRetry);
+    auto* far = makeForm(); cc->addLayout(far);
+    auto* autoEvery = new QSpinBox(); autoEvery->setRange(1, 240);
+    autoEvery->setValue(S.auto_retry_minutes > 0 ? S.auto_retry_minutes : 5); autoEvery->setSuffix(" min");
+    far->addRow("Try again every", autoEvery);
+    auto* autoFor = new QSpinBox(); autoFor->setRange(0, 720);
+    autoFor->setValue(S.auto_retry_hours); autoFor->setSuffix(" hours"); autoFor->setSpecialValueText("Never give up");
+    far->addRow("Give up after", autoFor);
+    auto syncAuto = [autoEvery, autoFor](bool on) { autoEvery->setEnabled(on); autoFor->setEnabled(on); };
+    syncAuto(autoRetry->isChecked());
+    connect(autoRetry, &QCheckBox::toggled, &dlg, syncAuto);
+    auto* autoNote = new QLabel("For long downloads: when the connection drops for longer than the retries "
+                                "above, MPDM tries again on its own and continues from the saved progress.");
+    autoNote->setWordWrap(true); autoNote->setFont(barlow(12));
+    autoNote->setStyleSheet("color:" + hx(P.text3) + ";background:transparent");
+    cc->addWidget(autoNote);
     cc->addStretch(1);
 
     // ========== Speed ==========
@@ -1051,6 +1133,8 @@ void MainWindow::openSettings() {
         ua->setCurrentIndex(0); uaCustom->clear();
         clip->setChecked(false);
         retries->setValue(d.max_retries); retryWait->setValue((int)d.retry_interval);
+        autoRetry->setChecked(d.auto_retry_minutes > 0); autoEvery->setValue(d.auto_retry_minutes);
+        autoFor->setValue(d.auto_retry_hours); resumeStart->setChecked(d.resume_on_start);
         (*rebuildCombo)(); catCombo->setCurrentIndex(0); (*showCat)();
     });
 
@@ -1076,6 +1160,9 @@ void MainWindow::openSettings() {
         S.verify_tls = verifyTls->isChecked();
         S.max_retries = retries->value();
         S.retry_interval = retryWait->value();
+        S.auto_retry_minutes = autoRetry->isChecked() ? autoEvery->value() : 0;
+        S.auto_retry_hours = autoFor->value();
+        S.resume_on_start = resumeStart->isChecked();
         manager_.clip_monitor_pref = clip->isChecked();
         manager_.set_global_rate((double)rate(glLimit->text()));
         manager_.set_on_complete(acts[onDone->currentIndex()], onCmd->text().toStdString());
@@ -1301,6 +1388,13 @@ counts downloads by state.</li>
 download popup.</li>
 <li><b>Selected</b> shows the chosen download in detail, including one bar per
 connection.</li>
+<li><b>Right-click a download</b> for more: <span class="k">Retry</span> a failed one (it
+continues from where it stopped), <span class="k">New link&hellip;</span> when the old link
+expired, <span class="k">Checksum&hellip;</span> to paste the checksum a website publishes
+(MPDM checks the finished file against it), open its folder or copy its link.</li>
+<li>If a download's saved progress no longer matches the file on the server, MPDM asks
+before throwing it away: <span class="k">Continue</span> (same file, e.g. a mirror),
+<span class="k">Start over</span>, or <span class="k">Keep for now</span>.</li>
 </ul>
 
 <h3>DOWNLOAD POPUP</h3>
@@ -1438,6 +1532,9 @@ whole queue is done.</li>
 right away</b> (untick to only add them to the queue).</li>
 <li><b>Ignore the server's file time when resuming</b> &mdash; keep resuming even if the
 server reports a new modification date (size and ETag must still match).</li>
+<li><b>Continue interrupted downloads when MPDM starts</b> &mdash; downloads that were
+running when MPDM closed or the PC shut down carry on by themselves; paused ones stay
+paused.</li>
 <li><b>Launch MPDM when the system starts</b> &mdash; starts quietly in the tray.</li>
 <li><b>Check for new versions automatically</b> &mdash; once a day MPDM asks GitHub for
 the latest release and shows a banner when there's a new one. <span class="k">Update
@@ -1471,6 +1568,9 @@ usually faster, but some servers limit them. 8 suits most broadband lines.</li>
 slowest one.</li>
 <li><b>Retry attempts on error</b> and <b>Wait between retries</b> (Automatic waits a
 little longer each time).</li>
+<li><b>Keep retrying failed downloads automatically</b> &mdash; after a download fails,
+try again every few minutes (and continue from the saved progress) until it works or the
+<b>Give up after</b> time passes. Handy for big downloads that run for days.</li>
 </ul>
 
 <h3>SPEED</h3>

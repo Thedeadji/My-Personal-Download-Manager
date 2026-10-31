@@ -28,6 +28,25 @@ using ProgressCb = std::function<void(const Progress&)>;
 // return "rename", "skip" or "overwrite". Called from the download's worker thread.
 using DuplicateResolver = std::function<std::string(const std::string& existing_path)>;
 
+// A partial download's saved progress no longer matches what the server reports
+// (size, ETag or date changed), so continuing could mix two different files.
+struct ResumeConflict {
+    std::string path;                     // the partial file
+    long long have = 0;                   // bytes already downloaded
+    std::optional<long long> old_size, new_size;
+    bool size_changed = false;            // "continue" is only possible when false
+};
+// Decide: "continue" (keep the progress — same size only), "restart" (discard it
+// and download from the start) or "keep" (stop; leave the partial untouched).
+// Called from the download's worker thread. Without one, the engine restarts.
+using ResumeResolver = std::function<std::string(const ResumeConflict&)>;
+
+// Thrown when a ResumeResolver chose "keep": the download stopped on purpose and
+// should not be retried automatically.
+struct ResumeConflictError : DownloadError {
+    using DownloadError::DownloadError;
+};
+
 class Download {
 public:
     Download(std::string url, Settings settings, std::string dest_path = "",
@@ -38,12 +57,17 @@ public:
     void cancel() { cancel_ = true; }
     void set_rate(double bps) { limiter_.set_rate(bps); }
     void set_duplicate_resolver(DuplicateResolver r) { resolver_ = std::move(r); }
+    void set_resume_resolver(ResumeResolver r) { resume_resolver_ = std::move(r); }
     // A caller-chosen filename (e.g. from the browser) used when no dest path is
     // given, so the engine still applies the duplicate-file policy to it instead of
     // the caller pre-resolving (and always renaming).
     void set_preferred_filename(std::string name) { preferred_filename_ = std::move(name); }
     long long total_downloaded();
     const std::string& dest_path() const { return dest_path_; }
+    // Where the file will end up: the real destination even while it is being
+    // written in the temporary folder. Pass this (not dest_path) back to resume, so
+    // the finished file still moves out of the temp folder.
+    std::string target_path() const { return final_path_.empty() ? dest_path_ : final_path_; }
 
     std::string start();  // run to completion; returns dest path; throws DownloadError
 
@@ -68,6 +92,7 @@ private:
     std::string preferred_filename_;  // caller-chosen name (dup policy still applies)
     ProgressCb cb_;
     DuplicateResolver resolver_;
+    ResumeResolver resume_resolver_;
     std::map<std::string, std::string> headers_;
     RateLimiter limiter_;
     RateLimiter* global_limiter_;

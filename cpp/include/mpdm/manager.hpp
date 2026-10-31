@@ -52,6 +52,15 @@ struct DownloadItem {
     bool stream = false;          // HLS/DASH grab (muxed to MP4) rather than a plain file
     int seg_done = 0, seg_total = 0;  // stream segment progress (runtime)
 
+    // Automatic retry of a failed download (see Settings::auto_retry_*).
+    double failed_since = 0.0;    // first failure of the current streak (epoch s; 0 = none)
+    double failed_at = 0.0;       // most recent failure
+    bool no_auto_retry = false;   // stopped on purpose (kept partial, bad checksum)
+
+    // Checksum to verify the finished file against ("sha256:<hex>"; "" = none).
+    std::string expected_hash;
+    std::string hash_state;       // "" | "checking" | "ok" | "mismatch"
+
     std::shared_ptr<Download> dl;  // runtime only (not persisted)
 
     std::string category() const;
@@ -77,6 +86,25 @@ public:
     void pump();
     void pause(const std::string& id);
     void resume(const std::string& id);
+    // Point a stopped (paused/failed) download at a fresh link, e.g. when the old
+    // one expired. Keeps the partial file: the engine resumes from it if the server
+    // still reports the same file (size/ETag), otherwise it starts over. Returns
+    // false if the item is unknown, running, or already complete.
+    bool set_url(const std::string& id, const std::string& url);
+
+    // Requeue failed downloads whose auto-retry wait is over. Call periodically
+    // (the GUI does it every second). `now` is for tests; 0 = the current time.
+    int retry_failed_due(double now = 0);
+    // Seconds until this failed item is retried automatically; -1 = it won't be.
+    double auto_retry_in(const DownloadItem& it, double now = 0);
+    // Continue the downloads that were running/queued when the list was last saved
+    // (Settings::resume_on_start). Call once the UI's resolvers are set up.
+    int resume_interrupted();
+
+    // Expected checksum (text as pasted: "<hex>", "sha256:<hex>", a SHA256SUMS
+    // line…; "" clears it). A finished file is checked right away, an unfinished
+    // one when it completes. False if the text isn't a checksum.
+    bool set_expected_hash(const std::string& id, const std::string& text);
     void remove(const std::string& id, bool delete_file = false);
     void pause_all();
     void resume_all();
@@ -102,6 +130,9 @@ public:
     // Resolver for the "ask" duplicate policy (a UI prompt). Each new download is
     // given this; "" if unset -> the engine falls back to "rename".
     void set_duplicate_resolver(DuplicateResolver r) { duplicate_resolver_ = std::move(r); }
+    // Asked when a download's saved progress doesn't match the server's file any
+    // more (continue / restart / keep). Unset -> the engine restarts.
+    void set_resume_resolver(ResumeResolver r) { resume_resolver_ = std::move(r); }
 
     // Scheduler (thin wrappers; the thread is not started until start_scheduler()).
     void start_scheduler();
@@ -134,11 +165,15 @@ private:
     void maybe_on_complete();
     void run_completion_action(const std::string& action, const std::string& command);
     void wait_dl_release(const std::shared_ptr<DownloadItem>& it);
+    void mark_failed(DownloadItem& it, const std::string& msg, bool no_auto_retry = false);
+    bool verify_hash(DownloadItem& it);  // true = matches (or nothing to check)
 
     std::map<std::string, std::shared_ptr<DownloadItem>> items_;
     std::vector<std::string> order_;
     std::recursive_mutex mu_;
     DuplicateResolver duplicate_resolver_;
+    ResumeResolver resume_resolver_;
+    std::vector<std::string> interrupted_;  // ids that were mid-flight at load()
     RateLimiter global_limiter_;
     std::string store_;
     std::vector<std::thread> threads_;

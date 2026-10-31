@@ -3,7 +3,10 @@
 #include <QCheckBox>
 #include <QDesktopServices>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
@@ -11,6 +14,7 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <cmath>
 #include <filesystem>
 
 #include "mpdm/manager.hpp"
@@ -221,12 +225,15 @@ void PopupWindow::buildFile() {
     stopBtn_->setToolTip("Cancel this download (removes it from the queue)");
     pauseBtn_ = new IndBtn("Pause", true); pauseBtn_->setPalette(pal_);
     closeFooterBtn_ = new IndBtn("Close"); closeFooterBtn_->setPalette(pal_); closeFooterBtn_->hide();
-    fl->addWidget(stopBtn_); fl->addWidget(pauseBtn_); fl->addWidget(closeFooterBtn_);
+    linkBtn_ = new IndBtn("New link…"); linkBtn_->setPalette(pal_); linkBtn_->hide();
+    linkBtn_->setToolTip("Continue with a fresh link (when the old one expired)");
+    fl->addWidget(linkBtn_); fl->addWidget(stopBtn_); fl->addWidget(pauseBtn_); fl->addWidget(closeFooterBtn_);
     root->addWidget(footer);
 
     connect(pauseBtn_, &QAbstractButton::clicked, this, &PopupWindow::onPauseResume);
     connect(stopBtn_, &QAbstractButton::clicked, this, &PopupWindow::onStop);
     connect(closeFooterBtn_, &QAbstractButton::clicked, this, [this] { close(); });
+    connect(linkBtn_, &QAbstractButton::clicked, this, [this] { askNewLink(this, mgr_, id_); });
 }
 
 void PopupWindow::buildStream() {
@@ -291,17 +298,23 @@ void PopupWindow::buildStream() {
     stopBtn_ = new IndBtn("Cancel"); stopBtn_->setPalette(pal_);
     stopBtn_->setToolTip("Cancel this download (removes it from the queue)");
     closeFooterBtn_ = new IndBtn("Close"); closeFooterBtn_->setPalette(pal_); closeFooterBtn_->hide();
-    fl->addWidget(pauseBtn_); fl->addWidget(stopBtn_); fl->addWidget(closeFooterBtn_);
+    linkBtn_ = new IndBtn("New link…"); linkBtn_->setPalette(pal_); linkBtn_->hide();
+    linkBtn_->setToolTip("Grab again from a fresh playlist link");
+    fl->addWidget(linkBtn_); fl->addWidget(pauseBtn_); fl->addWidget(stopBtn_); fl->addWidget(closeFooterBtn_);
     root->addWidget(footer);
 
+    // Disabled while grabbing (no pause); becomes "Retry" if the grab fails.
+    connect(pauseBtn_, &QAbstractButton::clicked, this, &PopupWindow::onPauseResume);
     connect(stopBtn_, &QAbstractButton::clicked, this, &PopupWindow::onStop);
     connect(closeFooterBtn_, &QAbstractButton::clicked, this, [this] { close(); });
+    connect(linkBtn_, &QAbstractButton::clicked, this, [this] { askNewLink(this, mgr_, id_); });
 }
 
 // ---- actions (delegate to the manager) -------------------------------------
 void PopupWindow::onPauseResume() {
     auto it = item(); if (!it) return;
-    if (it->status == ST_PAUSED) mgr_->resume(id_); else mgr_->pause(id_);
+    // A failed download continues from its saved progress, same as a paused one.
+    if (it->status == ST_PAUSED || it->status == ST_ERROR) mgr_->resume(id_); else mgr_->pause(id_);
 }
 void PopupWindow::onStop() {
     mgr_->remove(id_, /*delete_file=*/false);  // abort + drop from queue (keep partial)
@@ -349,14 +362,17 @@ void PopupWindow::tick() {
     bool done = it->status == ST_COMPLETED;
     bool failed = it->status == ST_ERROR;
     bool paused = it->status == ST_PAUSED;
+    bool hashing = it->hash_state == "checking";
     int pct = it->percent() ? (int)(*it->percent() + 0.5) : (done ? 100 : 0);
+    QString failText = QString::fromStdString(it->error);
+    if (QString rt = autoRetryText(mgr_, *it); failed && !rt.isEmpty()) failText += " · " + rt;
 
     if (stream_) {
         titleL_->setText(done ? "Stream saved" : failed ? "Stream failed" : QString("Grabbing stream %1%").arg(pct));
         pctL_->setText(QString("%1%").arg(pct));
         amtL_->setText(it->seg_total ? QString("Part %1 of %2").arg(it->seg_done).arg(it->seg_total)
                                      : QString(done ? "Done" : "Reading…"));
-        etaL_->setText(failed ? QString::fromStdString(it->error) : "");
+        etaL_->setText(failed ? failText : "");
         if (streamMeter_) streamMeter_->set(pct / 100.0, done ? P.green : P.cyan);
         auto setStep = [&](QLabel* m, bool active, bool complete) {
             if (!m) return;
@@ -369,13 +385,15 @@ void PopupWindow::tick() {
         setStep(step2_, it->seg_total > 0 && !done, done);
         setStep(step3_, false, done);
     } else {
-        titleL_->setText(done ? "Completed" : paused ? "Paused" : failed ? "Failed"
+        titleL_->setText(hashing ? "Verifying checksum…" : done ? "Completed" : paused ? "Paused" : failed ? "Failed"
                          : it->status == ST_QUEUED ? "Queued" : QString("Downloading %1%").arg(pct));
         pctL_->setText(QString("%1%").arg(pct));
         amtL_->setText(human((double)it->downloaded) + " of " +
                        (it->size ? human((double)*it->size) : QString("?")));
-        etaL_->setText(failed ? QString::fromStdString(it->error)
-                       : (!done && !paused && it->eta) ? htime(*it->eta) : done ? "Done" : "");
+        etaL_->setText(failed ? failText
+                       : hashing ? QString("Checking the finished file…")
+                       : (!done && !paused && it->eta) ? htime(*it->eta)
+                       : done ? (it->hash_state == "ok" ? "Done · checksum OK" : "Done") : "");
         speedL_->setText(it->status == ST_DOWNLOADING ? human(it->speed) + "/s" : "—");
         if (fileMeter_) fileMeter_->set(pct / 100.0, done ? P.green : failed ? P.red : P.cyan);
         if (noteL_) {
@@ -387,7 +405,7 @@ void PopupWindow::tick() {
         }
         if (kvSaving_) kvSaving_->setText(QString::fromStdString(
             it->dest_path.empty() ? "—" : fs::path(it->dest_path).parent_path().string()));
-        if (kvResume_) kvResume_->setText(done ? "COMPLETE" : paused ? "SAVED" : "SUPPORTED");
+        if (kvResume_) kvResume_->setText(done ? "COMPLETE" : (paused || failed) ? "SAVED" : "SUPPORTED");
         if (kvLimit_) {
             long long per = it->max_rate_bps;             // per-download limit (0 = none)
             double glob = mgr_ ? mgr_->global_rate_bps() : 0.0;  // manager-wide cap
@@ -397,15 +415,74 @@ void PopupWindow::tick() {
         }
     }
 
-    bool ended = done || failed;
-    if (ended) {
+    // Footer: finished -> Close; failed -> New link… / Cancel / Retry (continues
+    // from the saved progress); otherwise Cancel / Pause|Resume. Re-evaluated every
+    // tick so a retried download gets its normal buttons back.
+    if (linkBtn_) linkBtn_->setVisible(failed);
+    if (openChk_) openChk_->setVisible(!failed);  // make room for the three buttons
+    if (done) {
         if (pauseBtn_) pauseBtn_->hide();
         if (stopBtn_) stopBtn_->hide();
         if (closeFooterBtn_) closeFooterBtn_->show();
-        if (done && !openedFolder_ && openChk_ && openChk_->isChecked()) { openedFolder_ = true; onOpenFolder(); }
-    } else if (!stream_ && pauseBtn_) {
-        pauseBtn_->setText(paused ? "Resume" : "Pause");
+        if (!openedFolder_ && openChk_ && openChk_->isChecked()) { openedFolder_ = true; onOpenFolder(); }
+    } else if (pauseBtn_) {
+        pauseBtn_->show();
+        if (stopBtn_) stopBtn_->show();
+        if (closeFooterBtn_) closeFooterBtn_->hide();
+        pauseBtn_->setText(failed ? "Retry" : stream_ ? "Pause" : paused ? "Resume" : "Pause");
+        pauseBtn_->setEnabled(failed || !stream_);
+        pauseBtn_->setToolTip(failed ? (stream_ ? "Grab the stream again" : "Continue from where it stopped")
+                                     : QString());
     }
+}
+
+bool askNewLink(QWidget* parent, DownloadManager* mgr, const std::string& id) {
+    if (!mgr) return false;
+    QString cur;
+    for (auto& it : mgr->ordered()) if (it->id == id) { cur = QString::fromStdString(it->url); break; }
+    bool ok = false;
+    QString url = QInputDialog::getText(parent, "New link",
+                                        "Paste a fresh link for this download. If it's the same file,\n"
+                                        "it continues from where it stopped; otherwise it starts over.",
+                                        QLineEdit::Normal, cur, &ok).trimmed();
+    if (!ok || url.isEmpty() || url == cur) return false;
+    QUrl u(url);
+    const QString scheme = u.scheme().toLower();
+    if (!u.isValid() || u.host().isEmpty() || (scheme != "http" && scheme != "https" && scheme != "ftp")) {
+        QMessageBox::warning(parent, "New link", "That doesn't look like a download link (http, https or ftp).");
+        return false;
+    }
+    if (!mgr->set_url(id, url.toStdString())) return false;
+    mgr->resume(id);
+    return true;
+}
+
+bool askChecksum(QWidget* parent, DownloadManager* mgr, const std::string& id) {
+    if (!mgr) return false;
+    QString cur;
+    for (auto& it : mgr->ordered()) if (it->id == id) { cur = QString::fromStdString(it->expected_hash); break; }
+    bool ok = false;
+    QString text = QInputDialog::getText(parent, "Checksum",
+                                         "Paste the checksum the website lists for this file\n"
+                                         "(SHA-256, SHA-1, SHA-512 or MD5). Leave empty to remove it.",
+                                         QLineEdit::Normal, cur, &ok);
+    if (!ok) return false;
+    if (!mgr->set_expected_hash(id, text.toStdString())) {
+        QMessageBox::warning(parent, "Checksum",
+                             "That doesn't look like a checksum. Paste the long string of letters and digits\n"
+                             "(for example from a SHA256SUMS file).");
+        return false;
+    }
+    return true;
+}
+
+QString autoRetryText(DownloadManager* mgr, const DownloadItem& it) {
+    if (!mgr) return {};
+    double in = mgr->auto_retry_in(it);
+    if (in < 0) return {};
+    if (in < 1) return "retrying now";
+    if (in < 60) return QString("retrying in %1 s").arg((int)std::ceil(in));
+    return QString("retrying in %1 min").arg((int)std::ceil(in / 60.0));
 }
 
 // ---- window chrome ---------------------------------------------------------

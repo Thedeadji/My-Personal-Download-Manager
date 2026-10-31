@@ -1,19 +1,35 @@
 // Backend unit tests — validate the ported logic against the Python behavior.
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
+#ifdef _WIN32  // httplib pulls in windows.h: keep its macros (min/max, small) out
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+#include <httplib.h>
+#ifdef small
+#undef small
+#endif
 #include <nlohmann/json.hpp>
 
 #include "mpdm/aes128.hpp"
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
+#include "mpdm/checksum.hpp"
 #include "mpdm/config.hpp"
 #include "mpdm/dash.hpp"
 #include "mpdm/gdrive.hpp"
@@ -201,6 +217,21 @@ static void test_manager() {
     CHECK(a->max_rate_bps == 500 * 1024);
     m.set_global_rate(1024 * 1024);
     CHECK(m.global_rate_bps() == 1024 * 1024);
+
+    // New link for a failed download: URL swapped, error cleared, persisted.
+    // Refused for an unknown id, an empty URL, or a finished download.
+    a->status = mpdm::ST_ERROR;
+    a->error = "HTTP 403";
+    CHECK(m.set_url(a->id, "http://127.0.0.1:1/a-fresh.zip"));
+    CHECK(a->url == "http://127.0.0.1:1/a-fresh.zip");
+    CHECK(a->error.empty());
+    CHECK(!m.set_url("no-such-id", "http://127.0.0.1:1/x.zip"));
+    CHECK(!m.set_url(a->id, ""));
+    a->status = mpdm::ST_COMPLETED;
+    CHECK(!m.set_url(a->id, "http://127.0.0.1:1/other.zip"));
+    CHECK(a->url == "http://127.0.0.1:1/a-fresh.zip");
+    a->status = mpdm::ST_PAUSED;
+    m.save();
 
     // A fresh manager reloads the normal item (as paused), not the incognito one.
     mpdm::DownloadManager m2(mpdm::Settings{}, 2, 0);
@@ -504,8 +535,222 @@ static void test_scheduler() {
     CHECK(threw);
 }
 
+// Failed download -> New link -> Retry, end to end over a local server. The "old"
+// link 403s for the second half (an expired token), so the download fails with the
+// first half saved. Pointing it at the "new" link must continue (fetch only the
+// missing half), produce identical bytes, and still move out of the temp folder.
+static void test_retry_new_link() {
+    auto tmp = (fs::temp_directory_path() / fs::path("mpdm_retry_" + std::to_string(::time(nullptr)))).string();
+    fs::create_directories(tmp);
+    set_home(tmp);
+
+    const long long kSize = 2 * 1024 * 1024, kHalf = kSize / 2;
+    std::string body(static_cast<size_t>(kSize), '\0');
+    for (long long i = 0; i < kSize; ++i) body[static_cast<size_t>(i)] = static_cast<char>((i * 131 + 7) % 251);
+
+    std::mutex mu;
+    long long new_bytes = 0;  // body bytes the new link served (excluding the 1-byte probe)
+    httplib::Server svr;
+    auto serve = [&](const httplib::Request& req, httplib::Response& res, bool expired,
+                     const char* etag = "\"v1\"") {
+        long long a = 0, b = kSize - 1;
+        if (!req.ranges.empty()) {
+            a = req.ranges[0].first;
+            if (req.ranges[0].second >= 0) b = req.ranges[0].second;
+        }
+        res.set_header("ETag", etag);
+        res.set_header("Accept-Ranges", "bytes");
+        if (expired && a >= kHalf) {  // an error *page*, like real sites send
+            res.status = 403;
+            res.set_content("<html><body>403 Forbidden: link expired</body></html>", "text/html");
+            return;
+        }
+        if (!expired && b > a) { std::lock_guard<std::mutex> lk(mu); new_bytes += b - a + 1; }
+        res.set_content(body, "application/octet-stream");  // httplib answers the Range (206)
+    };
+    svr.Get("/old/f.bin", [&](const httplib::Request& q, httplib::Response& r) { serve(q, r, true); });
+    svr.Get("/new/f.bin", [&](const httplib::Request& q, httplib::Response& r) { serve(q, r, false); });
+    // Same bytes, different ETag: a mirror (or a changed file) that can't be told apart.
+    svr.Get("/mirror/f.bin", [&](const httplib::Request& q, httplib::Response& r) { serve(q, r, false, "\"v2\""); });
+    int port = svr.bind_to_any_port("127.0.0.1");
+    std::thread th([&] { svr.listen_after_bind(); });
+    std::string base = "http://127.0.0.1:" + std::to_string(port);
+
+    Settings s;
+    s.output_dir = (fs::path(tmp) / "out").string();
+    s.temp_dir = (fs::path(tmp) / "work").string();
+    s.categorize = false;
+    s.connections = 4;
+    s.min_segment_size = 256 * 1024;
+    s.dynamic_segmentation = false;  // fixed 4 x 512 KiB ranges: two succeed, two 403
+    s.max_retries = 0;
+    {
+        DownloadManager m(s, 1, 0);
+        auto it = m.add(base + "/old/f.bin", "f.bin", 4, {}, /*start=*/true);
+        auto wait_for = [&](const char* st) {
+            for (int i = 0; i < 300 && it->status != st; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            return it->status == st;
+        };
+        CHECK(wait_for(ST_ERROR));  // the 403s end in "failed", not an endless re-request
+        CHECK(it->error.find("403") != std::string::npos);
+        CHECK(it->downloaded == kHalf);  // first half kept; the error pages wrote nothing
+        CHECK(it->dest_path == (fs::path(s.output_dir) / "f.bin").string());  // real target, not the temp copy
+
+        CHECK(m.set_url(it->id, base + "/new/f.bin"));
+        m.resume(it->id);
+        CHECK(wait_for(ST_COMPLETED));
+        CHECK(new_bytes > 0 && new_bytes <= kHalf);  // continued, didn't start over
+
+        std::string got;
+        { std::ifstream f(it->dest_path, std::ios::binary); std::ostringstream o; o << f.rdbuf(); got = o.str(); }
+        CHECK(fs::path(it->dest_path).parent_path() == fs::path(s.output_dir));
+        CHECK(got == body);
+        CHECK(!fs::exists(fs::path(s.temp_dir) / "f.bin"));
+
+        // The server's file now looks different (ETag v1 -> v2): progress is never
+        // dropped silently. "keep" stops with the partial intact (and no auto-retry);
+        // "continue" then resumes it; the expected checksum is verified at the end.
+        std::string choice = "keep";
+        int asked = 0;
+        ResumeConflict seen;
+        m.set_resume_resolver([&](const ResumeConflict& c) { ++asked; seen = c; return choice; });
+        auto g = m.add(base + "/old/f.bin", "g.bin", 4, {}, true);
+        auto wait_g = [&](const char* st) {
+            for (int i = 0; i < 300 && g->status != st; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            return g->status == st;
+        };
+        CHECK(wait_g(ST_ERROR));
+        CHECK(g->downloaded == kHalf);
+        CHECK(m.set_url(g->id, base + "/mirror/f.bin"));
+        m.resume(g->id);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        CHECK(wait_g(ST_ERROR));
+        CHECK(asked == 1);
+        CHECK(seen.have == kHalf && !seen.size_changed);
+        CHECK(g->no_auto_retry);
+        CHECK(g->error.find("looks different") != std::string::npos);
+        CHECK(m.auto_retry_in(*g) < 0);
+        CHECK(fs::exists(sidecar_path((fs::path(s.temp_dir) / "g.bin").string())));
+
+        std::string sum;
+        {
+            auto ref = (fs::path(tmp) / "ref.bin").string();
+            { std::ofstream f(ref, std::ios::binary); f << body; }
+            sum = file_digest(ref, "sha256");
+        }
+        CHECK(m.set_expected_hash(g->id, "SHA-256: " + sum));
+        choice = "continue";
+        long long before = new_bytes;
+        m.resume(g->id);
+        CHECK(wait_g(ST_COMPLETED));
+        CHECK(asked == 2);
+        CHECK(new_bytes - before <= kHalf);  // continued from the saved half
+        CHECK(g->hash_state == "ok");
+        {
+            std::ifstream f(g->dest_path, std::ios::binary); std::ostringstream o; o << f.rdbuf();
+            CHECK(o.str() == body);
+        }
+
+        // A wrong checksum on a finished file: checked in the background -> failed,
+        // and not retried automatically.
+        CHECK(!m.set_expected_hash(g->id, "not-a-checksum"));
+        CHECK(m.set_expected_hash(g->id, std::string(64, '0')));
+        for (int i = 0; i < 200 && g->hash_state != "mismatch"; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        CHECK(g->hash_state == "mismatch");
+        CHECK(g->status == ST_ERROR && g->no_auto_retry);
+    }
+    svr.stop();
+    th.join();
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+}
+
+static void test_checksum() {
+    CHECK(parse_checksum("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD").algo == "sha256");
+    CHECK(parse_checksum("sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").valid());
+    CHECK(parse_checksum("SHA-256 ba7816bf 8f01cfea 414140de 5dae2223 b00361a3 96177a9c b410ff61 f20015ad").valid());
+    CHECK(parse_checksum("900150983cd24fb0d6963f7d28e17f72  ubuntu.iso").algo == "md5");  // SHA256SUMS-style line
+    CHECK(parse_checksum("a9993e364706816aba3e25717850c26c9cd0d89d").algo == "sha1");
+    CHECK(!parse_checksum("sha1:900150983cd24fb0d6963f7d28e17f72").valid());  // md5 length, sha1 prefix
+    CHECK(!parse_checksum("hello").valid());
+    CHECK(!parse_checksum("").valid());
+
+    auto p = (fs::temp_directory_path() / "mpdm_abc.txt").string();
+    { std::ofstream f(p, std::ios::binary); f << "abc"; }
+    CHECK(file_digest(p, "sha256") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(file_digest(p, "md5") == "900150983cd24fb0d6963f7d28e17f72");
+    CHECK(file_digest(p, "sha1") == "a9993e364706816aba3e25717850c26c9cd0d89d");
+    CHECK(file_digest(p, "nope").empty());
+    CHECK(file_digest(p + ".missing", "sha256").empty());
+    std::error_code ec;
+    fs::remove(p, ec);
+}
+
+// Auto-retry timing + give-up, and resume-on-start, without any network
+// (max_concurrent = 0, so requeued items never actually start).
+static void test_auto_retry_and_resume_on_start() {
+    auto tmp = (fs::temp_directory_path() / fs::path("mpdm_auto_" + std::to_string(::time(nullptr)))).string();
+    fs::create_directories(tmp);
+    set_home(tmp);
+    Settings s;
+    s.auto_retry_minutes = 5;
+    s.auto_retry_hours = 24;
+    {
+        DownloadManager m(s, 0, 0);
+        auto a = m.add("http://127.0.0.1:1/a.bin", "", 0, {}, false);
+        auto b = m.add("http://127.0.0.1:1/b.bin", "", 0, {}, false);
+        auto c = m.add("http://127.0.0.1:1/c.bin", "", 0, {}, false);
+        const double t = 1000000;
+        a->status = ST_ERROR; a->failed_since = t; a->failed_at = t;                            // normal failure
+        b->status = ST_ERROR; b->failed_since = t; b->failed_at = t; b->no_auto_retry = true;   // stopped on purpose
+        c->status = ST_ERROR; c->failed_since = t - 25 * 3600; c->failed_at = t;                // failing > 24 h: gave up
+        CHECK(m.auto_retry_in(*a, t + 60) == 240);
+        CHECK(m.retry_failed_due(t + 299) == 0);
+        CHECK(m.retry_failed_due(t + 300) == 1);
+        CHECK(a->status == ST_QUEUED && a->failed_since == t);  // streak kept for the give-up clock
+        CHECK(b->status == ST_ERROR && c->status == ST_ERROR);
+        CHECK(m.auto_retry_in(*b, t) < 0 && m.auto_retry_in(*c, t) < 0);
+        m.settings.auto_retry_minutes = 0;  // off
+        a->status = ST_ERROR;
+        CHECK(m.retry_failed_due(t + 10000) == 0);
+
+        // A manual Retry resets the streak and the "stopped on purpose" flag.
+        m.resume(b->id);
+        CHECK(b->status == ST_QUEUED && b->failed_since == 0 && !b->no_auto_retry);
+
+        // Persisted as running/queued vs paused for the restart below.
+        a->status = ST_QUEUED; b->status = ST_DOWNLOADING; c->status = ST_PAUSED;
+        m.save();
+    }
+    {
+        DownloadManager m(s, 0, 0);  // resume_on_start defaults to on
+        CHECK(m.resume_interrupted() == 2);
+        int queued = 0;
+        for (auto& it : m.ordered()) {
+            if (it->url.find("c.bin") != std::string::npos) CHECK(it->status == ST_PAUSED);
+            else if (it->status == ST_QUEUED) ++queued;
+        }
+        CHECK(queued == 2);
+        CHECK(m.resume_interrupted() == 0);  // only once per run
+        for (auto& it : m.ordered()) if (it->status == ST_QUEUED) it->status = ST_DOWNLOADING;
+        m.save();
+    }
+    {
+        Settings off = s;
+        off.resume_on_start = false;
+        DownloadManager m(off, 0, 0);
+        CHECK(m.resume_interrupted() == 0);
+        for (auto& it : m.ordered()) CHECK(it->status == ST_PAUSED);
+    }
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+}
+
 int main() {
     test_plan_segments();
+    test_checksum();
+    test_auto_retry_and_resume_on_start();
     test_parse_rate();
     test_categories();
     test_batch();
@@ -521,6 +766,7 @@ int main() {
     test_native_framing();
     test_scheduler();
     test_manager_persistence();
+    test_retry_new_link();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;

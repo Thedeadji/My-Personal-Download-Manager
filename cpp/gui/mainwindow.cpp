@@ -1,7 +1,9 @@
 #include "mainwindow.hpp"
 
 #include <QApplication>
+#include <QClipboard>
 #include <QCloseEvent>
+#include <QContextMenuEvent>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QUrl>
@@ -42,6 +44,7 @@
 #endif
 
 #include "fileicon.hpp"
+#include "mpdm/checksum.hpp"
 #include "popup.hpp"
 
 namespace mpdm::gui {
@@ -125,6 +128,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         else QMetaObject::invokeMethod(this, ask, Qt::BlockingQueuedConnection);
         return result;
     });
+    // Same for a download whose saved progress no longer matches the server's file.
+    manager_.set_resume_resolver([this](const ResumeConflict& c) -> std::string {
+        std::string result = "keep";
+        auto ask = [this, &c, &result] { result = askResumeConflict(c).toStdString(); };
+        if (QThread::currentThread() == this->thread()) ask();
+        else QMetaObject::invokeMethod(this, ask, Qt::BlockingQueuedConnection);
+        return result;
+    });
     // Seed already-finished items so the "download complete" dialog only fires for
     // downloads that finish while the app is open (not for history on startup).
     for (auto& it : manager_.ordered())
@@ -134,6 +145,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setupTray();
     connect(&timer_, &QTimer::timeout, this, &MainWindow::refresh);
     timer_.start(1000);
+    // Continue what was downloading when MPDM last closed (Settings -> General).
+    // Deferred so the window and the resolvers above are ready first.
+    QTimer::singleShot(1500, this, [this] { if (manager_.resume_interrupted()) refresh(); });
     connect(&jobTimer_, &QTimer::timeout, this, &MainWindow::pollJobs);
     jobTimer_.start(500);
     // Update notifier: check shortly after startup, then every few hours.
@@ -292,13 +306,11 @@ static QIcon makeTrayIcon(int state, double frac) {
     return ic;
 }
 
-QMenu* MainWindow::buildTrayMenu() {
-    const Palette& P = *pal_;
+// Industrial menu styling: dark panel, 40px rows, amber hover with a left edge,
+// inset separators (see the tray design reference). Used by the tray and row menus.
+static QString menuSheet(const Palette& P) {
     auto hx = [](const QColor& c) { return c.name(QColor::HexArgb); };
-    auto* menu = new QMenu(this);
-    // Industrial styling: dark panel, 40px rows, amber hover with a left edge,
-    // inset separators (see the tray design reference).
-    menu->setStyleSheet(QString(
+    return QString(
         "QMenu{background:%1;border:1px solid %2;padding:6px}"
         "QMenu::item{padding:11px 16px 11px 12px;margin:0;color:%3;background:transparent;"
             "border-left:2px solid transparent}"
@@ -310,7 +322,14 @@ QMenu* MainWindow::buildTrayMenu() {
         "QMenu::indicator:checked{background:%5;border:1px solid %5}"
         "QMenu::indicator:unchecked{background:%8;border:1px solid %2}")
         .arg(hx(P.panel), hx(P.bevelLight), hx(P.text), hx(P.rowSelected),
-             hx(P.amber), hx(P.text3), hx(P.well), hx(P.well)));
+             hx(P.amber), hx(P.text3), hx(P.well), hx(P.well));
+}
+
+QMenu* MainWindow::buildTrayMenu() {
+    const Palette& P = *pal_;
+    auto hx = [](const QColor& c) { return c.name(QColor::HexArgb); };
+    auto* menu = new QMenu(this);
+    menu->setStyleSheet(menuSheet(P));
 
     // --- non-interactive status header (lamp + "N DOWNLOADING" + speed) ---
     auto* header = new QWidget;
@@ -395,6 +414,49 @@ void MainWindow::devShotDeselect(const QString& out) {
     manager_.remove(a->id, false);   // ...then it's removed
     refresh();                       // panel must return to "No selection"
     QTimer::singleShot(400, [this, out] { this->grab().save(out); qApp->quit(); });
+}
+
+void MainWindow::devShotRetry(const QString& out) {
+    // A download that failed at 48%: the main window (Selected panel shows Retry +
+    // New link…) to <out>, its popup (New link… / Cancel / Retry) to <out>-popup.png.
+    timer_.stop(); jobTimer_.stop();
+    auto a = manager_.add("https://cdn.example.com/dl/expired-token/ubuntu-24.04.1-desktop-amd64.iso",
+                          "ubuntu-24.04.1-desktop-amd64.iso", 0, {}, false, 0, false, false);
+    a->status = ST_ERROR; a->error = "HTTP 403 Forbidden";
+    a->failed_since = a->failed_at =
+        std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count() - 60;
+    a->expected_hash = "sha256:" + std::string(64, 'a');
+    a->size = 6228000000LL; a->downloaded = 2990000000LL;
+    a->dest_path = "D:/Downloads/Programs/ubuntu-24.04.1-desktop-amd64.iso";
+    selId_ = QString::fromStdString(a->id);
+    refresh();
+    openPopupFor(a->id, false);
+    auto* pw = popups_.back();
+    QString popOut = out; popOut.replace(".png", "-popup.png");
+    QTimer::singleShot(600, pw, [pw] { pw->repaint(); });
+    QTimer::singleShot(900, [this, pw, out, popOut] {
+        pw->grab().save(popOut);
+        this->grab().save(out);
+        qApp->quit();
+    });
+}
+
+void MainWindow::devShotConflict(const QString& out) {
+    timer_.stop(); jobTimer_.stop();
+    ResumeConflict c;
+    c.path = "D:/Downloads/Programs/ubuntu-24.04.1-desktop-amd64.iso";
+    c.have = 4150000000LL; c.old_size = c.new_size = 6228000000LL;
+    QTimer::singleShot(700, [out] {
+        if (auto* m = QApplication::activeModalWidget()) { m->grab().save(out); m->close(); }
+        qApp->quit();
+    });
+    askResumeConflict(c);
+}
+
+std::shared_ptr<DownloadItem> MainWindow::findItem(const std::string& id) {
+    for (auto& it : manager_.ordered())
+        if (it->id == id) return it;
+    return nullptr;
 }
 
 void MainWindow::devShotQuickPanel(const QString& out) {
@@ -494,16 +556,19 @@ void MainWindow::showQuickPanel() {
             auto d = itemById(id);
             if (!d) return;
             bool done = d->status == ST_COMPLETED, paused = d->status == ST_PAUSED;
+            bool failed = d->status == ST_ERROR;
             int p = d->percent() ? (int)(*d->percent() + 0.5) : (done ? 100 : 0);
-            meter->set(p / 100.0, done ? P.green : paused ? P.violet : P.cyan);
+            meter->set(p / 100.0, done ? P.green : failed ? P.red : paused ? P.violet : P.cyan);
             pct->setText(QString("%1%").arg(p));
             spd->setText(d->status == ST_DOWNLOADING ? human(d->speed) + "/s" : "");
-            pbtn->setText(QString::fromUtf8(paused ? "\xE2\x96\xB6" : "\xE2\x8F\xB8"));  // ▶ resume / ⏸ pause
+            // ↻ retry / ▶ resume / ⏸ pause
+            pbtn->setText(QString::fromUtf8(failed ? "\xE2\x86\xBB" : paused ? "\xE2\x96\xB6" : "\xE2\x8F\xB8"));
+            pbtn->setToolTip(failed ? "Retry (continues from where it stopped)" : paused ? "Resume" : "Pause");
         };
         connect(pbtn, &QPushButton::clicked, this, [=] {
             auto d = itemById(id);
             if (!d) return;
-            if (d->status == ST_PAUSED) manager_.resume(id); else manager_.pause(id);
+            if (d->status == ST_PAUSED || d->status == ST_ERROR) manager_.resume(id); else manager_.pause(id);
             refresh();
             refreshRow();
         });
@@ -1068,7 +1133,7 @@ void MainWindow::buildUi() {
     auto* kv = new QVBoxLayout(kvWell);
     kv->setContentsMargins(10, 10, 10, 10);
     kv->setSpacing(7);
-    for (auto k : {"Speed", "Time left", "Limit", "Resume", "Save to"}) {
+    for (auto k : {"Speed", "Time left", "Limit", "Resume", "Checksum", "Save to"}) {
         auto* r = new QHBoxLayout;
         r->addWidget(lab(QString(k).toUpper(), chakra(11, 600, 0.08), P.text3));
         r->addStretch(1);
@@ -1082,15 +1147,23 @@ void MainWindow::buildUi() {
     auto* selBtns = new QHBoxLayout;
     selBtns->setSpacing(6);
     auto* selPause = themed(new IndBtn("Pause"));
+    selPause->setObjectName("sel_pause");  // text follows the item: Pause / Resume / Retry
     connect(selPause, &QAbstractButton::clicked, this, [this] {
         if (selId_.isEmpty()) return;
-        auto items = manager_.ordered();
-        for (auto& it : items) if (QString::fromStdString(it->id) == selId_) {
-            if (it->status == ST_PAUSED) manager_.resume(selId_.toStdString()); else manager_.pause(selId_.toStdString());
-        }
+        auto d = findItem(selId_.toStdString());
+        if (!d) return;
+        if (d->status == ST_PAUSED || d->status == ST_ERROR) manager_.resume(d->id); else manager_.pause(d->id);
         refresh();
     });
     selBtns->addWidget(selPause, 1);
+    auto* selLink = themed(new IndBtn("New link…"));
+    selLink->setObjectName("sel_link");  // only for a failed download
+    selLink->setToolTip("Continue with a fresh link (when the old one expired)");
+    selLink->hide();
+    connect(selLink, &QAbstractButton::clicked, this, [this] {
+        if (!selId_.isEmpty() && askNewLink(this, &manager_, selId_.toStdString())) refresh();
+    });
+    selBtns->addWidget(selLink, 1);
     auto* selOpen = themed(new IndBtn("Open folder"));
     connect(selOpen, &QAbstractButton::clicked, this, [this] {
         // The selected file's folder; with nothing selected, the download folder.
@@ -1131,6 +1204,14 @@ void MainWindow::buildUi() {
 }
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* ev) {
+    if (ev->type() == QEvent::ContextMenu) {
+        if (auto* w = qobject_cast<QWidget*>(obj); w && w->property("mpdmId").isValid()) {
+            selId_ = w->property("mpdmId").toString();
+            refresh();
+            showRowMenu(selId_.toStdString(), static_cast<QContextMenuEvent*>(ev)->globalPos());
+            return true;
+        }
+    }
     if (ev->type() == QEvent::MouseButtonPress || ev->type() == QEvent::MouseButtonDblClick) {
         if (auto* w = qobject_cast<QWidget*>(obj)) {
             QVariant id = w->property("mpdmId");
@@ -1150,6 +1231,38 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* ev) {
         }
     }
     return QMainWindow::eventFilter(obj, ev);
+}
+
+// Right-click menu for a queue row. Actions follow the item's state; a failed
+// download offers Retry (continue from saved progress) and New link….
+void MainWindow::showRowMenu(const std::string& id, const QPoint& at) {
+    auto d = findItem(id);
+    if (!d) return;
+    const Palette& P = *pal_;
+    QMenu menu(this);
+    menu.setStyleSheet(menuSheet(P));
+    const bool failed = d->status == ST_ERROR, paused = d->status == ST_PAUSED;
+    const bool running = d->status == ST_DOWNLOADING || d->status == ST_QUEUED;
+    if (failed) menu.addAction(trayIcon("play", P.text2), "Retry", this, [this, id] { manager_.resume(id); refresh(); });
+    if (paused) menu.addAction(trayIcon("play", P.text2), "Resume", this, [this, id] { manager_.resume(id); refresh(); });
+    if (running) menu.addAction(trayIcon("pause", P.text2), "Pause", this, [this, id] { manager_.pause(id); refresh(); });
+    if (failed || paused)
+        menu.addAction(trayIcon("extlink", P.text2), "New link…", this, [this, id] {
+            if (askNewLink(this, &manager_, id)) refresh();
+        });
+    if (d->status != ST_COMPLETED)
+        menu.addAction(trayIcon("extlink", P.amber), "Open download popup", this,
+                       [this, id, stream = d->stream] { openPopupFor(id, stream); });
+    if (!d->dest_path.empty())
+        menu.addAction("Open folder", this, [path = d->dest_path] {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(
+                QString::fromStdString(std::filesystem::path(path).parent_path().string())));
+        });
+    menu.addAction("Checksum…", this, [this, id] { if (askChecksum(this, &manager_, id)) refresh(); });
+    menu.addAction("Copy link", this, [url = d->url] { QGuiApplication::clipboard()->setText(QString::fromStdString(url)); });
+    menu.addSeparator();
+    menu.addAction("Remove…", this, [this] { onRemove(); });
+    menu.exec(at);
 }
 
 void MainWindow::applyTheme() {
@@ -1188,6 +1301,7 @@ void MainWindow::onClearDone() {
 
 void MainWindow::refresh() {
     const Palette& P = *pal_;
+    manager_.retry_failed_due();  // failed downloads whose auto-retry wait is over
     auto items = manager_.ordered();
     auto setText = [&](const char* id, const QString& t) { if (auto* l = findChild<QLabel*>(id)) l->setText(t); };
 
@@ -1370,7 +1484,11 @@ void MainWindow::refresh() {
             auto* nm = new QLabel(QString::fromStdString(it->filename.empty() ? it->url : it->filename));
             nm->setFont(barlow(13)); nm->setStyleSheet("color:" + (isSel ? P.amberText : P.text).name(QColor::HexArgb) + ";background:transparent");
             nmBox->addWidget(nm);
-            if (!it->error.empty()) { auto* e = new QLabel(QString::fromStdString(it->error)); e->setFont(barlow(12)); e->setStyleSheet("color:" + P.red.name() + ";background:transparent"); nmBox->addWidget(e); }
+            if (!it->error.empty()) {
+                QString et = QString::fromStdString(it->error);
+                if (QString rt = autoRetryText(&manager_, *it); !rt.isEmpty()) et += " · " + rt;
+                auto* e = new QLabel(et); e->setFont(barlow(12)); e->setStyleSheet("color:" + P.red.name() + ";background:transparent"); nmBox->addWidget(e);
+            }
             h->addLayout(nmBox, 1);
             auto* sz = new QLabel(it->size ? human((double)*it->size) : "—"); sz->setFixedWidth(64); sz->setFont(mono(11)); sz->setStyleSheet("color:" + P.text2.name(QColor::HexArgb) + ";background:transparent");
             h->addWidget(sz);
@@ -1410,7 +1528,11 @@ void MainWindow::refresh() {
             setText("sel_amt", human((double)sel->downloaded) + " / " + human(sel->size ? (double)*sel->size : 0));
             if (selMeter_) selMeter_->set(pct / 100.0, stColor(P, sel->status));
             if (lanes_) lanes_->setData(sel->conn_stats);
-            if (auto* st = findChild<QLabel*>("sel_state")) st->setText(QString::fromStdString(sel->status));
+            if (auto* st = findChild<QLabel*>("sel_state")) {
+                QString t = sel->hash_state == "checking" ? QString("verifying") : QString::fromStdString(sel->status);
+                if (QString rt = autoRetryText(&manager_, *sel); !rt.isEmpty()) t += " · " + rt;
+                st->setText(t);
+            }
             if (auto* nt = findChild<QLabel*>("sel_note")) {
                 const SegmentProgress* stolen = nullptr;
                 for (auto& c : sel->conn_stats) if (c.stole_from >= 0) { stolen = &c; break; }
@@ -1421,6 +1543,20 @@ void MainWindow::refresh() {
             setText("kv_time_left", sel->status == ST_DOWNLOADING && sel->eta ? htime(*sel->eta) : "—");
             setText("kv_limit", sel->max_rate_bps ? human((double)sel->max_rate_bps) + "/s" : "Unlimited");
             setText("kv_resume", sel->status == ST_COMPLETED ? "Done" : "Saved");
+            {
+                const Checksum want = parse_checksum(sel->expected_hash);
+                const QString algo = QString::fromStdString(checksum_label(want.algo));
+                setText("kv_checksum", !want.valid()                    ? QString("—")
+                                       : sel->hash_state == "checking"  ? "Checking…"
+                                       : sel->hash_state == "ok"        ? algo + " OK"
+                                       : sel->hash_state == "mismatch"  ? algo + " MISMATCH"
+                                                                        : algo + " when done");
+            }
+            if (auto* b = findChild<QAbstractButton*>("sel_pause")) {
+                b->setText(sel->status == ST_ERROR ? "Retry" : sel->status == ST_PAUSED ? "Resume" : "Pause");
+                b->setEnabled(sel->status != ST_COMPLETED);
+            }
+            if (auto* b = findChild<QAbstractButton*>("sel_link")) b->setVisible(sel->status == ST_ERROR);
             setText("kv_save_to", QString::fromStdString(sel->dest_path.empty() ? "—" : sel->dest_path));
         } else {
             // Nothing to select (queue empty / item removed): back to the idle state
@@ -1435,7 +1571,9 @@ void MainWindow::refresh() {
             if (auto* nt = findChild<QLabel*>("sel_note")) nt->hide();
             if (selMeter_) selMeter_->set(0.0, P.cyan);
             if (lanes_) lanes_->setData({});
-            for (const char* k : {"kv_speed", "kv_time_left", "kv_limit", "kv_resume", "kv_save_to"}) setText(k, "—");
+            for (const char* k : {"kv_speed", "kv_time_left", "kv_limit", "kv_resume", "kv_checksum", "kv_save_to"}) setText(k, "—");
+            if (auto* b = findChild<QAbstractButton*>("sel_pause")) { b->setText("Pause"); b->setEnabled(true); }
+            if (auto* b = findChild<QAbstractButton*>("sel_link")) b->hide();
         }
     }
 }

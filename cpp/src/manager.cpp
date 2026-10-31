@@ -13,6 +13,7 @@
 
 #include "mpdm/batch.hpp"
 #include "mpdm/categories.hpp"
+#include "mpdm/checksum.hpp"
 #include "mpdm/grabber.hpp"
 #include "mpdm/http_client.hpp"
 #include "mpdm/storage.hpp"
@@ -47,7 +48,10 @@ static json settings_to_json(const Settings& s) {
             {"set_file_times", s.set_file_times},
             {"dynamic_segmentation", s.dynamic_segmentation},
             {"duplicate_policy", s.duplicate_policy},
-            {"resume_ignore_mtime", s.resume_ignore_mtime}};
+            {"resume_ignore_mtime", s.resume_ignore_mtime},
+            {"auto_retry_minutes", s.auto_retry_minutes},
+            {"auto_retry_hours", s.auto_retry_hours},
+            {"resume_on_start", s.resume_on_start}};
 }
 
 static void apply_settings_json(Settings& s, const json& j) {
@@ -76,6 +80,9 @@ static void apply_settings_json(Settings& s, const json& j) {
     s.dynamic_segmentation = j.value("dynamic_segmentation", s.dynamic_segmentation);
     s.duplicate_policy = j.value("duplicate_policy", s.duplicate_policy);
     s.resume_ignore_mtime = j.value("resume_ignore_mtime", s.resume_ignore_mtime);
+    s.auto_retry_minutes = j.value("auto_retry_minutes", s.auto_retry_minutes);
+    s.auto_retry_hours = j.value("auto_retry_hours", s.auto_retry_hours);
+    s.resume_on_start = j.value("resume_on_start", s.resume_on_start);
 }
 
 static json load_prefs() {
@@ -211,6 +218,11 @@ static json item_to_json(const DownloadItem& it) {
     j["headers"] = it.headers;
     j["error"] = it.error;
     j["added_at"] = it.added_at;
+    j["failed_since"] = it.failed_since;
+    j["failed_at"] = it.failed_at;
+    j["no_auto_retry"] = it.no_auto_retry;
+    j["expected_hash"] = it.expected_hash;
+    j["hash_state"] = it.hash_state == "checking" ? "" : it.hash_state;  // a check doesn't survive a restart
     return j;
 }
 
@@ -259,8 +271,17 @@ void DownloadManager::load() {
             if (j.contains("headers")) it->headers = j["headers"].get<std::map<std::string, std::string>>();
             it->error = j.value("error", "");
             it->added_at = j.value("added_at", now_epoch());
-            // Anything mid-flight comes back paused; never auto-resumes.
-            if (it->status == ST_DOWNLOADING || it->status == ST_QUEUED) it->status = ST_PAUSED;
+            it->failed_since = j.value("failed_since", 0.0);
+            it->failed_at = j.value("failed_at", 0.0);
+            it->no_auto_retry = j.value("no_auto_retry", false);
+            it->expected_hash = j.value("expected_hash", "");
+            it->hash_state = j.value("hash_state", "");
+            // Anything mid-flight comes back paused; resume_interrupted() continues
+            // these when "resume on start" is on.
+            if (it->status == ST_DOWNLOADING || it->status == ST_QUEUED) {
+                it->status = ST_PAUSED;
+                interrupted_.push_back(it->id);
+            }
             items_[it->id] = it;
             order_.push_back(it->id);
         }
@@ -387,10 +408,13 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
         try {
             std::string path = grab(item->url, out, s, "auto", "best", gcb);
             item->dest_path = path;
-            item->status = ST_COMPLETED;
             item->speed = 0; item->eta = 0;
+            if (verify_hash(*item)) {
+                item->status = ST_COMPLETED;
+                item->failed_since = item->failed_at = 0;
+            }
         } catch (const std::exception& e) {
-            item->status = ST_ERROR; item->error = e.what(); item->speed = 0;
+            mark_failed(*item, e.what());
         }
         item->dl = nullptr;
         save(); pump(); maybe_on_complete();
@@ -404,9 +428,9 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
         item->eta = p.eta_seconds;
         item->conn_stats = p.connections;
         if (item->dl && !item->dl->dest_path().empty()) {
-            item->dest_path = item->dl->dest_path();
+            item->dest_path = item->dl->target_path();
             if (item->filename.empty())
-                item->filename = fs::path(item->dl->dest_path()).filename().string();
+                item->filename = fs::path(item->dest_path).filename().string();
         }
     };
 
@@ -418,17 +442,23 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
     if (dest.empty() && !item->filename.empty())
         dl->set_preferred_filename(sanitize_filename(item->filename));
     if (duplicate_resolver_) dl->set_duplicate_resolver(duplicate_resolver_);
+    if (resume_resolver_) dl->set_resume_resolver(resume_resolver_);
     item->dl = dl;
     try {
         std::string path = dl->start();
         item->dest_path = path;
         item->filename = fs::path(path).filename().string();
-        item->status = ST_COMPLETED;
         item->speed = 0;
         item->eta = 0;
+        const bool good = verify_hash(*item);  // (still "downloading" while it hashes)
+        if (good) {
+            item->status = ST_COMPLETED;
+            item->failed_since = item->failed_at = 0;
+            item->no_auto_retry = false;
+        }
         // "Remember the folder I last chose for this category": when on, update the
         // category's default folder to wherever this (non-incognito) download landed.
-        if (!item->incognito) {
+        if (good && !item->incognito) {
             std::string cat = classify(item->filename, settings.category_exts);
             auto rit = settings.remember_category_folder.find(cat);
             if (rit != settings.remember_category_folder.end() && rit->second) {
@@ -439,22 +469,21 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
                 }
             }
         }
+    } catch (const ResumeConflictError& e) {
+        mark_failed(*item, e.what(), /*no_auto_retry=*/true);  // the user chose to stop
     } catch (const DownloadError& e) {
         std::string msg = e.what();
         if (msg.find("paused") != std::string::npos) {
             item->status = ST_PAUSED;
+            item->speed = 0;
         } else if (msg.find("cancelled") != std::string::npos) {
             item->dl = nullptr;
             return;  // removed — don't touch
         } else {
-            item->status = ST_ERROR;
-            item->error = msg;
+            mark_failed(*item, msg);
         }
-        item->speed = 0;
     } catch (const std::exception& e) {
-        item->status = ST_ERROR;
-        item->error = e.what();
-        item->speed = 0;
+        mark_failed(*item, e.what());
     }
     item->dl = nullptr;
     save();
@@ -484,9 +513,123 @@ void DownloadManager::resume(const std::string& id) {
         if (item->status != ST_PAUSED && item->status != ST_ERROR) return;
         item->error.clear();
         item->status = ST_QUEUED;
+        // A manual Resume/Retry starts a fresh auto-retry window.
+        item->failed_since = item->failed_at = 0;
+        item->no_auto_retry = false;
+        if (item->hash_state == "mismatch") item->hash_state.clear();
     }
     save();
     pump();
+}
+
+void DownloadManager::mark_failed(DownloadItem& it, const std::string& msg, bool no_auto_retry) {
+    const double now = now_epoch();
+    it.status = ST_ERROR;
+    it.error = msg;
+    it.speed = 0;
+    if (it.failed_since <= 0) it.failed_since = now;
+    it.failed_at = now;
+    it.no_auto_retry = no_auto_retry;
+}
+
+static std::string mismatch_message(const std::string& algo) {
+    return checksum_label(algo) + " checksum doesn't match: the file is damaged or isn't the expected one";
+}
+
+bool DownloadManager::verify_hash(DownloadItem& it) {
+    Checksum want = parse_checksum(it.expected_hash);
+    if (!want.valid()) return true;
+    it.hash_state = "checking";
+    std::string got = file_digest(it.dest_path, want.algo, &shutting_);
+    if (got.empty()) {  // unreadable, or the app is closing: leave it unchecked
+        it.hash_state.clear();
+        return true;
+    }
+    if (got == want.hex) {
+        it.hash_state = "ok";
+        return true;
+    }
+    it.hash_state = "mismatch";
+    mark_failed(it, mismatch_message(want.algo), /*no_auto_retry=*/true);
+    return false;
+}
+
+bool DownloadManager::set_expected_hash(const std::string& id, const std::string& text) {
+    const bool clear = text.find_first_not_of(" \t\r\n") == std::string::npos;
+    Checksum c = parse_checksum(text);
+    if (!clear && !c.valid()) return false;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        auto f = items_.find(id);
+        if (f == items_.end() || f->second->hash_state == "checking") return false;
+        auto item = f->second;
+        item->expected_hash = c.str();
+        item->hash_state.clear();
+        // Already finished: check the file on disk now, off the caller's thread.
+        if (!clear && item->status == ST_COMPLETED && !item->dest_path.empty() && !shutting_) {
+            item->hash_state = "checking";
+            threads_.emplace_back([this, item, c] {
+                std::string got = file_digest(item->dest_path, c.algo, &shutting_);
+                {
+                    std::lock_guard<std::recursive_mutex> lk2(mu_);
+                    if (got.empty()) item->hash_state.clear();
+                    else if (got == c.hex) item->hash_state = "ok";
+                    else {
+                        item->hash_state = "mismatch";
+                        mark_failed(*item, mismatch_message(c.algo), /*no_auto_retry=*/true);
+                    }
+                }
+                save();
+            });
+        }
+    }
+    save();
+    return true;
+}
+
+double DownloadManager::auto_retry_in(const DownloadItem& it, double now) {
+    if (now <= 0) now = now_epoch();
+    if (it.status != ST_ERROR || it.no_auto_retry || settings.auto_retry_minutes <= 0 || it.failed_at <= 0)
+        return -1;
+    const double since = it.failed_since > 0 ? it.failed_since : it.failed_at;
+    if (settings.auto_retry_hours > 0 && now - since >= settings.auto_retry_hours * 3600.0) return -1;  // gave up
+    return std::max(0.0, it.failed_at + settings.auto_retry_minutes * 60.0 - now);
+}
+
+int DownloadManager::retry_failed_due(double now) {
+    if (now <= 0) now = now_epoch();
+    int n = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        if (shutting_) return 0;
+        for (auto& kv : items_) {
+            auto& it = *kv.second;
+            if (auto_retry_in(it, now) != 0.0) continue;  // -1 = never, >0 = not yet
+            it.status = ST_QUEUED;  // keeps failed_since: the give-up clock keeps running
+            it.error.clear();
+            ++n;
+        }
+    }
+    if (n) { save(); pump(); }
+    return n;
+}
+
+int DownloadManager::resume_interrupted() {
+    int n = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        std::vector<std::string> ids;
+        ids.swap(interrupted_);  // once per run
+        if (!settings.resume_on_start) return 0;
+        for (const auto& id : ids) {
+            auto f = items_.find(id);
+            if (f == items_.end() || f->second->status != ST_PAUSED) continue;  // paused by the user since
+            f->second->status = ST_QUEUED;
+            ++n;
+        }
+    }
+    if (n) { save(); pump(); }
+    return n;
 }
 
 void DownloadManager::delete_files(const std::string& dest_path) {
@@ -556,6 +699,21 @@ void DownloadManager::resume_all() {
     }
     save();
     pump();
+}
+
+bool DownloadManager::set_url(const std::string& id, const std::string& url) {
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        auto it = items_.find(id);
+        if (it == items_.end() || url.empty()) return false;
+        auto item = it->second;
+        if (item->status == ST_DOWNLOADING || item->status == ST_COMPLETED || item->dl) return false;
+        item->url = url;
+        item->stream = item->stream || url_is_stream(url);
+        item->error.clear();
+    }
+    save();
+    return true;
 }
 
 void DownloadManager::set_item_rate(const std::string& id, long long bps) {

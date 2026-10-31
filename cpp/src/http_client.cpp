@@ -128,10 +128,26 @@ size_t header_cb(char* buffer, size_t size, size_t nitems, void* userdata) {
 struct SinkCtx {
     const std::function<bool(const char*, size_t)>* sink;
     bool aborted = false;
+    // Set by get_range: vet the response status before the first body byte, so an
+    // error page or an ignored Range is never handed to the sink.
+    CURL* handle = nullptr;
+    long long start = 0;
+    bool checked = false;
+    long rejected = 0;  // status that made us refuse the body (0 = accepted)
 };
 size_t write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* c = static_cast<SinkCtx*>(userdata);
     size_t n = size * nmemb;
+    if (c->handle && !c->checked) {
+        c->checked = true;
+        long code = 0;
+        curl_easy_getinfo(c->handle, CURLINFO_RESPONSE_CODE, &code);
+        if (code >= 400 || (c->start > 0 && code == 200)) {
+            c->rejected = code;
+            c->aborted = true;
+            return 0;
+        }
+    }
     if (!(*c->sink)(ptr, n)) { c->aborted = true; return 0; }  // abort
     return n;
 }
@@ -255,6 +271,8 @@ long get_range(const std::string& url, long long start, long long end,
     if (!c) throw HttpError("curl init failed");
     curl_slist* hdrs = build_header_list(opt);
     SinkCtx sctx{&sink};
+    sctx.handle = c;
+    sctx.start = start;
 
     std::string range = std::to_string(start) + "-" + (end < 0 ? "" : std::to_string(end));
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
@@ -270,6 +288,10 @@ long get_range(const std::string& url, long long start, long long end,
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
 
+    if (sctx.rejected == 200 || (code == 200 && start > 0))
+        throw RangeIgnoredError("server ignored the byte range (sent the whole file)");
+    if (sctx.rejected >= 400 || code >= 400)  // also catches an error with an empty body
+        throw HttpError("HTTP " + std::to_string(code ? code : sctx.rejected));
     if (rc != CURLE_OK && !(aborted && (rc == CURLE_WRITE_ERROR || rc == CURLE_ABORTED_BY_CALLBACK)))
         throw HttpError(std::string("get_range failed: ") + curl_easy_strerror(rc));
     return code;

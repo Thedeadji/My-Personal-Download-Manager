@@ -27,6 +27,16 @@ namespace mpdm::gui {
 class LedMeter;
 class IndBtn;
 
+// Ask for a fresh link for a stopped download (expired / changed URL), point the
+// item at it and queue it again. Returns true if the link was replaced.
+bool askNewLink(QWidget* parent, DownloadManager* mgr, const std::string& id);
+// Ask for the checksum a site publishes and attach it to the download (checked
+// when it finishes, or right away if it already has). Returns true if set.
+bool askChecksum(QWidget* parent, DownloadManager* mgr, const std::string& id);
+// "retrying in 4 min" for a failed download that will be retried automatically,
+// "" otherwise.
+QString autoRetryText(DownloadManager* mgr, const DownloadItem& it);
+
 class PopupWindow : public QWidget {
     Q_OBJECT
 public:
@@ -69,6 +79,7 @@ private:
     IndBtn* pauseBtn_ = nullptr;
     IndBtn* stopBtn_ = nullptr;
     IndBtn* closeFooterBtn_ = nullptr;
+    IndBtn* linkBtn_ = nullptr;    // "New link…", shown only when the download failed
 
     // file
     LedMeter* fileMeter_ = nullptr;

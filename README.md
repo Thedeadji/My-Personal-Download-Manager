@@ -18,6 +18,13 @@ commercial download manager. No license key, no registration: it's free by desig
   slowest remaining range, so no connection sits idle near the end.
 - **Resume.** Progress is checkpointed to a `<file>.mpdm` sidecar; an interrupted
   download continues where it stopped (when the server's size and ETag still match).
+  If they don't, MPDM asks before throwing the progress away. Downloads that were
+  running when MPDM closed carry on when it starts again.
+- **Failed downloads** can be retried from where they stopped, given a **new link**
+  when the old one expired, and are **retried automatically** every few minutes
+  (configurable, with a give-up time) — useful for downloads that run for days.
+- **Checksums.** Paste the SHA-256 / SHA-1 / SHA-512 / MD5 a site publishes and MPDM
+  checks the finished file against it.
 - **Video streams.** HLS (`.m3u8`, including AES-128 encrypted) and DASH (`.mpd`)
   are downloaded segment by segment and joined into an MP4 with `ffmpeg`.
 - **Google Drive links** are resolved past the "can't scan for viruses" page to the

@@ -412,6 +412,7 @@ static void open_in_browser(const std::string& url) {
 int run_web(const std::string& host, int port, bool open_browser) {
     DownloadManager manager(Settings{}, 3, 0);
     manager.start_scheduler();
+    manager.resume_interrupted();  // no prompts here: a changed file restarts (engine default)
     httplib::Server svr;
 
     auto send_json = [](httplib::Response& res, const json& j, int code = 200) {
@@ -426,6 +427,7 @@ int run_web(const std::string& host, int port, bool open_browser) {
         res.set_content(PAGE, "text/html; charset=utf-8");
     });
     svr.Get("/api/state", [&](const httplib::Request&, httplib::Response& res) {
+        manager.retry_failed_due();  // the page polls every second
         send_json(res, state_json(manager));
     });
 

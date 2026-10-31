@@ -13,6 +13,11 @@ namespace mpdm {
 struct HttpError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
+// A ranged request (start > 0) answered with the whole file (200): the server
+// ignored Range, so these bytes must not be written at the requested offset.
+struct RangeIgnoredError : HttpError {
+    using HttpError::HttpError;
+};
 
 // The subset of Settings the HTTP layer needs (full config ported separately).
 struct HttpOptions {
@@ -36,7 +41,9 @@ RemoteInfo probe(const std::string& url, const HttpOptions& opt = {});
 
 // Stream bytes [start, end] (end inclusive; end < 0 means open-ended) to `sink`.
 // `sink(data, len)` returns false to abort. Returns the HTTP status code.
-// Throws HttpError on a transport failure.
+// Throws HttpError on a transport failure or an HTTP error status (>= 400), and
+// RangeIgnoredError when start > 0 but the server sent the whole file (200). In
+// both cases nothing from that response reaches the sink.
 long get_range(const std::string& url, long long start, long long end,
                const HttpOptions& opt,
                const std::function<bool(const char*, size_t)>& sink);

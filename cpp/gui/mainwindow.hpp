@@ -32,18 +32,21 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     void openSettings();
     void openScheduler();
-    void openHelp(int page = 0);
-    static QString appVersion();  // this build's version (MPDM_VERSION)  // the (?) button: About / Connect a browser / Settings explained
+    void openHelp(int page = 0);  // the (?) button: About / Connect a browser / Settings explained
+    static QString appVersion();  // this build's version (MPDM_VERSION)
     void openPopupFor(const std::string& id, bool stream);  // live popup for a queue item
+    void allowQuit() { allowQuit_ = true; }                 // closing really quits (no hide-to-tray)
     void devShotPopup(const QString& out, bool stream);      // dev: render a popup to PNG
     void devShotGraph(const QString& out);                   // dev: render the graph with data
     void devShotFinish(const QString& out);                  // dev: render the finish dialog to PNG
     void devShotTrayMenu(const QString& out);                // dev: render the tray right-click menu
     void devShotQuickPanel(const QString& out);              // dev: render the left-click quick panel
     void devShotTrayIcons(const QString& out);               // dev: render the tray icon states strip
-    void devShotDeselect(const QString& out);
-    void devShotIcons(const QString& out);
-    void devTestUpdate(const QString& out);                  // dev: exercise the updater end to end                   // dev: queue of mixed file types                // dev: select an item, remove it, render
+    void devShotDeselect(const QString& out);                // dev: select an item, remove it, render
+    void devShotIcons(const QString& out);                   // dev: queue of mixed file types
+    void devTestUpdate(const QString& out);                  // dev: exercise the updater end to end
+    void devShotRetry(const QString& out);                   // dev: failed download (popup + Selected panel)
+    void devShotConflict(const QString& out);                // dev: "file on the server changed" dialog
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -60,9 +63,12 @@ private:
     void onAdd();
     void onRemove();                                  // Remove with optional "delete file?" confirm
     void onClearDone();                               // drop completed items from the list
+    std::shared_ptr<DownloadItem> findItem(const std::string& id);
+    void showRowMenu(const std::string& id, const QPoint& at);  // right-click on a queue row
     void toggleMaximize();                            // maximize/restore (frameless)
     void showFinishDialog(const std::shared_ptr<DownloadItem>& it);  // IDM-style "download complete"
     QString askDuplicate(const QString& path);  // "file exists" prompt -> rename/skip/overwrite
+    QString askResumeConflict(const ResumeConflict& c);  // server file changed -> continue/restart/keep
     void applyAppearance(const QString& mode);  // "system" | "light" | "dark"
     void setupTray();
     QMenu* buildTrayMenu();     // Industrial-styled right-click menu (rebuilt on theme change)

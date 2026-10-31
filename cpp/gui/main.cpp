@@ -81,6 +81,9 @@ int main(int argc, char** argv) {
     }
 
     mpdm::gui::MainWindow w;
+    // Dev renders end with qApp->quit(); let the window close instead of hiding to
+    // the tray, or Qt 6 cancels that quit and the run never exits.
+    if (isShot) w.allowQuit();
     // Dev: MPDM_WIN_SIZE=1280x720 forces a window size (resolution testing).
     if (const char* ws = std::getenv("MPDM_WIN_SIZE")) {
         int ww = 0, hh = 0;
@@ -110,6 +113,11 @@ int main(int argc, char** argv) {
             w.devShotIcons(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot-deselect") == 0 && i + 1 < argc) {
             w.devShotDeselect(argv[i + 1]);
+        } else if (std::strcmp(argv[i], "--shot-retry") == 0 && i + 1 < argc) {
+            w.devShotRetry(argv[i + 1]);
+        } else if (std::strcmp(argv[i], "--shot-conflict") == 0 && i + 1 < argc) {
+            QString out = argv[i + 1];
+            QTimer::singleShot(300, &w, [&w, out] { w.devShotConflict(out); });
         } else if (std::strcmp(argv[i], "--shot-trayicons") == 0 && i + 1 < argc) {
             w.devShotTrayIcons(argv[i + 1]);
         } else if (std::strcmp(argv[i], "--shot-check") == 0 && i + 1 < argc) {
