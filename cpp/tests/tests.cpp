@@ -561,8 +561,12 @@ static void test_retry_new_link() {
         res.set_header("ETag", etag);
         res.set_header("Accept-Ranges", "bytes");
         if (expired && a >= kHalf) {  // an error *page*, like real sites send
+            // Padded to the file's size: cpp-httplib 0.14 (Ubuntu 24.04) range-checks
+            // error responses too and would turn a short page's 403 into a 416.
+            std::string page = "<html><body>403 Forbidden: link expired</body></html>";
+            page.resize(static_cast<size_t>(kSize), ' ');
             res.status = 403;
-            res.set_content("<html><body>403 Forbidden: link expired</body></html>", "text/html");
+            res.set_content(page, "text/html");
             return;
         }
         if (!expired && b > a) { std::lock_guard<std::mutex> lk(mu); new_bytes += b - a + 1; }
