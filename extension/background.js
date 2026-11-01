@@ -299,10 +299,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
-  if (msg.type === "browseSaveAs") {
-    // The native host opens the system Save-As dialog and returns the chosen path.
+  if (msg.type === "browseFolder") {
+    // The native host opens the system folder picker and returns the chosen folder.
     try {
-      chrome.runtime.sendNativeMessage(HOST_NAME, { type: "browse", filename: msg.filename || "" }, (resp) => {
+      chrome.runtime.sendNativeMessage(HOST_NAME, { type: "browseFolder", start: msg.start || "" }, (resp) => {
         sendResponse({ path: (resp && resp.path) || "" });
       });
     } catch (e) {

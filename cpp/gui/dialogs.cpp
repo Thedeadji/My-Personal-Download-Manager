@@ -1496,7 +1496,7 @@ after a restart (or use Firefox Developer Edition).</p>
 <li>Right-click a link, image or video &rarr; <b>Download with MyPersonalDownloadManager</b>.</li>
 <li>In the extension's popup: <b>Capture all browser downloads</b> sends every download to
 MPDM; <b>Ask before each download</b> shows a dialog where you can rename the file, pick a
-folder (<b>Save as&hellip;</b>), and set connections or a speed limit; <b>Show video
+folder (the folder button next to <b>Save to</b>), and set connections or a speed limit; <b>Show video
 download panel on pages</b> adds a floating list of the videos on a page.</li>
 </ul>
 

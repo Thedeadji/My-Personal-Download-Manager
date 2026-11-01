@@ -34,6 +34,7 @@
 #include <io.h>
 #include <shobjidl.h>
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
 #else
 #include <cstdio>
 #include <cstdlib>
@@ -408,6 +409,20 @@ static std::string browse_save_as(const std::string& suggested) {
     return "";
 }
 
+// Linux folder picker for the extension's "Save to" (the filename stays as typed).
+static std::string browse_folder(const std::string& start_dir) {
+    std::string dir = start_dir.empty() ? default_download_dir() : start_dir;
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) dir = default_download_dir();
+    if (!which("zenity").empty())
+        return run_capture("zenity --file-selection --directory --title='Save to folder' --filename=" +
+                           shell_quote((fs::path(dir) / "").string()) + " 2>/dev/null");
+    if (!which("kdialog").empty())
+        return run_capture("kdialog --getexistingdirectory " + shell_quote(dir) + " 2>/dev/null");
+    log_line("browse: neither zenity nor kdialog is installed");
+    return "";
+}
+
 #endif  // _WIN32
 
 #ifdef _WIN32
@@ -430,6 +445,52 @@ static std::string browse_save_as(const std::string& suggested_utf8) {
             }
         }
         DWORD opts = 0; dlg->GetOptions(&opts); dlg->SetOptions(opts | FOS_OVERWRITEPROMPT);
+        if (SUCCEEDED(dlg->Show(nullptr))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+                    int n = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
+                    if (n > 0) { std::string s(n - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, path, -1, s.data(), n, nullptr, nullptr);
+                        result = s; }
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    }
+    if (did_init) CoUninitialize();
+    return result;
+}
+
+static std::wstring to_wide(const std::string& s) {
+    int wn = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (wn <= 0) return {};
+    std::wstring w(wn - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), wn);
+    return w;
+}
+
+// Open the system folder picker for the extension's "Save to" and return the
+// chosen folder (UTF-8), or "" if the user cancels. The filename stays as typed.
+static std::string browse_folder(const std::string& start_utf8) {
+    std::string result;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    bool did_init = SUCCEEDED(hr);
+    IFileOpenDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&dlg)))) {
+        DWORD opts = 0; dlg->GetOptions(&opts);
+        dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        dlg->SetTitle(L"Save to folder");
+        std::string start = start_utf8.empty() ? default_download_dir() : start_utf8;
+        IShellItem* folder = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(to_wide(start).c_str(), nullptr, IID_PPV_ARGS(&folder)))) {
+            dlg->SetFolder(folder);
+            folder->Release();
+        }
         if (SUCCEEDED(dlg->Show(nullptr))) {
             IShellItem* item = nullptr;
             if (SUCCEEDED(dlg->GetResult(&item))) {
@@ -489,6 +550,8 @@ static int serve() {
             send({{"type", "pong"}});
         } else if (type == "browse") {
             send({{"type", "browsed"}, {"path", browse_save_as(msg.value("filename", ""))}});
+        } else if (type == "browseFolder") {
+            send({{"type", "browsed"}, {"path", browse_folder(msg.value("start", ""))}});
         } else if (type == "download") {
             threads.emplace_back(run_job, msg);
         } else {

@@ -158,7 +158,7 @@ sudo apt install ./mpdm-qt_*_amd64.deb
 ```
 
 Install `ffmpeg` for video-stream grabbing, and `zenity` or `kdialog` for the
-extension's *Save as…* dialog. The `.deb` puts the extension in
+extension's folder picker. The `.deb` puts the extension in
 `/usr/share/mpdm/extension`; with an AppImage, download `mpdm-extension-<version>.zip`
 from the release and unzip it. To build from source instead, see
 [`cpp/packaging/linux/README.md`](cpp/packaging/linux/README.md).
@@ -222,7 +222,7 @@ then run `python install_host.py --extension-id <ID> --browser chrome` (or `edge
 - Both use the same `~/.mypersonaldownloadmanager` folder: don't run them at the same time.
 - The Python version is the original prototype. It doesn't have the tray icon and quick
   panel, "ask" for existing files, the temporary folder, server file dates, several
-  connected browsers at once, or the extension's *Save as…* button.
+  connected browsers at once, or the extension's folder picker.
 
 Tests: `python tests/test_batch.py` (any `tests/test_*.py`; `test_engine.py` also needs
 `pip install pytest`).

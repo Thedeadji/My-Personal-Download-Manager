@@ -252,19 +252,13 @@ function finish(start) {
 dlBtn.addEventListener("click", () => finish(true));
 cancelBtn.addEventListener("click", () => finish(false));
 
-// "Save as…": ask the native host to open the system Save-As dialog (the browser
-// popup can't open one itself), then split the chosen path into folder + name.
+// Folder button: ask the native host to open the system folder picker (the browser
+// popup can't open one itself) and put the chosen folder in "Save to". The file
+// name is left alone; Rename stays the place to change it.
 browseBtn.addEventListener("click", () => {
-  const first = expandAll()[0] || linksEl.value.trim();
-  const suggested = renameEl.value.trim() || cleanName(first) || "download";
-  chrome.runtime.sendMessage({ type: "browseSaveAs", filename: suggested }, (resp) => {
-    const p = resp && resp.path;
-    if (!p) return;
-    const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
-    const dir = i >= 0 ? p.slice(0, i) : "";
-    const file = i >= 0 ? p.slice(i + 1) : p;
+  chrome.runtime.sendMessage({ type: "browseFolder", start: savetoEl.value.trim() }, (resp) => {
+    const dir = resp && resp.path;
     if (dir) savetoEl.value = dir;
-    if (file) { renameEl.value = file; renameTouched = true; }
   });
 });
 

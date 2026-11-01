@@ -133,5 +133,5 @@ git tag v1.2.0 && git push origin v1.2.0
   the Internet Settings registry).
 - **Default download folder** follows `XDG_DOWNLOAD_DIR` (localized folder names work).
 - **Incognito** saves into the hidden `.InvisibleFile` folder.
-- **"Save as..."** in the extension uses `zenity` or `kdialog`.
+- **The folder picker** in the extension (next to *Save to*) uses `zenity` or `kdialog`.
 - `ffmpeg` must be on `PATH` for HLS/DASH stream grabbing.
