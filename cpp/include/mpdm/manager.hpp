@@ -73,6 +73,9 @@ public:
                              long long global_rate_bps = 0);
     ~DownloadManager();
 
+    // A link that's already in the list and not finished (say it failed and was
+    // pasted in again) isn't added twice: that item is returned and, if `start`,
+    // resumed from its saved progress.
     std::shared_ptr<DownloadItem> add(const std::string& url, const std::string& filename = "",
                                       int connections = 0,
                                       std::map<std::string, std::string> headers = {},
@@ -114,6 +117,9 @@ public:
     void set_global_rate(double bps) { global_limiter_.set_rate(bps); }
     void set_item_rate(const std::string& id, long long bps);
 
+    // A snapshot of the list, in order: copies, safe to read on any thread while
+    // downloads run. (Items returned by add() are the live ones; read those through
+    // ordered() too once they've started.)
     std::vector<std::shared_ptr<DownloadItem>> ordered();
     int active_count();
 
@@ -149,7 +155,8 @@ public:
     void purge_incognito_incomplete();
 
     // Browser integration: adopt jobs the native host dropped in jobs/ (each a
-    // browser download request) into the queue. Returns the new item ids.
+    // browser download request) into the queue. Returns their item ids (a link
+    // already in the list, unfinished, resumes that item instead of adding one).
     std::vector<std::string> ingest_jobs();
 
     Settings settings;
@@ -166,7 +173,11 @@ private:
     void run_completion_action(const std::string& action, const std::string& command);
     void wait_dl_release(const std::shared_ptr<DownloadItem>& it);
     void mark_failed(DownloadItem& it, const std::string& msg, bool no_auto_retry = false);
-    bool verify_hash(DownloadItem& it);  // true = matches (or nothing to check)
+    bool verify_hash(const std::shared_ptr<DownloadItem>& it);  // true = matches (or nothing to check)
+    // The unfinished item with this link, if any (caller holds mu_); hands it the
+    // new request's headers.
+    std::shared_ptr<DownloadItem> reuse_unfinished(const std::string& url, bool incognito,
+                                                   std::map<std::string, std::string>& headers);
 
     std::map<std::string, std::shared_ptr<DownloadItem>> items_;
     std::vector<std::string> order_;

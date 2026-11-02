@@ -99,6 +99,13 @@ void Download::save() {
 
 void Download::emit_progress(bool force) {
     if (!cb_) return;
+    // Every connection's thread reports progress. Let one through at a time so the
+    // callback never runs concurrently (it updates shared state, e.g. the manager's
+    // item): a routine report is skipped while another is in flight; a forced one
+    // waits its turn.
+    std::unique_lock<std::mutex> one(emit_mu_, std::defer_lock);
+    if (force) one.lock();
+    else if (!one.try_lock()) return;
     double now = now_seconds();
     if (!force && (now - last_emit_) < 0.2) return;
     last_emit_ = now;

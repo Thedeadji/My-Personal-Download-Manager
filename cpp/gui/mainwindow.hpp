@@ -36,6 +36,7 @@ public:
     static QString appVersion();  // this build's version (MPDM_VERSION)
     void openPopupFor(const std::string& id, bool stream);  // live popup for a queue item
     void allowQuit() { allowQuit_ = true; }                 // closing really quits (no hide-to-tray)
+    void showFromTray();                                     // show + raise the window (also: a 2nd launch)
     void devShotPopup(const QString& out, bool stream);      // dev: render a popup to PNG
     void devShotGraph(const QString& out);                   // dev: render the graph with data
     void devShotFinish(const QString& out);                  // dev: render the finish dialog to PNG
@@ -73,7 +74,6 @@ private:
     void setupTray();
     QMenu* buildTrayMenu();     // Industrial-styled right-click menu (rebuilt on theme change)
     void showQuickPanel();      // left-click quick panel (active downloads + quick actions)
-    void showFromTray();
     void showDownloadPopups();  // open/raise the live popup(s) for current downloads
     void quitApp();  // real exit (from tray menu)
 

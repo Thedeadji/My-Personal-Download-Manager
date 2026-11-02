@@ -191,6 +191,14 @@ static void set_home(const std::string& dir) {
 #endif
 }
 
+// The manager's current view of an item (a copy, like the UIs read): once a
+// download runs, its thread keeps updating the live item that add() returned.
+static std::shared_ptr<DownloadItem> snap(DownloadManager& m, const std::string& id) {
+    for (auto& it : m.ordered())
+        if (it->id == id) return it;
+    return std::make_shared<DownloadItem>();
+}
+
 static void test_manager() {
     auto tmp = (fs::temp_directory_path() / fs::path("mpdm_mgr_" + std::to_string(::time(nullptr)))).string();
     fs::create_directories(tmp);
@@ -230,6 +238,31 @@ static void test_manager() {
     a->status = mpdm::ST_COMPLETED;
     CHECK(!m.set_url(a->id, "http://127.0.0.1:1/other.zip"));
     CHECK(a->url == "http://127.0.0.1:1/a-fresh.zip");
+
+    // Adding a link that's already listed: a finished one is a new download; an
+    // unfinished one is the same download (with the new request's headers), from
+    // the Add box and from a browser job alike. Incognito ones are kept apart.
+    auto again = m.add(a->url, "", 0, {}, false);
+    CHECK(again->id != a->id);
+    m.remove(again->id);
+    a->status = mpdm::ST_ERROR;
+    CHECK(m.add(" " + a->url + "\n", "", 0, {{"Cookie", "s=2"}}, false)->id == a->id);
+    CHECK(a->headers["Cookie"] == "s=2");
+    CHECK(a->status == mpdm::ST_ERROR);  // start=false: left for the user to Retry
+    auto hidden = m.add(a->url, "", 0, {}, false, 0, /*incognito=*/true);
+    CHECK(hidden->id != a->id);
+    m.remove(hidden->id);
+    a->status = mpdm::ST_DOWNLOADING;  // (not really running: resume() leaves it be)
+    {
+        fs::create_directories(fs::path(mpdm::state_dir()) / "jobs");
+        std::ofstream f(fs::path(mpdm::state_dir()) / "jobs" / "j1.json");
+        f << nlohmann::json{{"url", a->url}, {"output_dir", "/elsewhere"}}.dump();
+    }
+    auto ids = m.ingest_jobs();
+    CHECK(ids.size() == 1 && ids[0] == a->id);
+    CHECK(a->output_dir.empty());  // its progress stays where it is
+    CHECK(m.ordered().size() == 2);
+
     a->status = mpdm::ST_PAUSED;
     m.save();
 
@@ -574,6 +607,8 @@ static void test_retry_new_link() {
     };
     svr.Get("/old/f.bin", [&](const httplib::Request& q, httplib::Response& r) { serve(q, r, true); });
     svr.Get("/new/f.bin", [&](const httplib::Request& q, httplib::Response& r) { serve(q, r, false); });
+    std::atomic<bool> flaky{true};  // fails like the old link until the test flips it
+    svr.Get("/flaky/h.bin", [&](const httplib::Request& q, httplib::Response& r) { serve(q, r, flaky); });
     // Same bytes, different ETag: a mirror (or a changed file) that can't be told apart.
     svr.Get("/mirror/f.bin", [&](const httplib::Request& q, httplib::Response& r) { serve(q, r, false, "\"v2\""); });
     int port = svr.bind_to_any_port("127.0.0.1");
@@ -590,20 +625,28 @@ static void test_retry_new_link() {
     s.max_retries = 0;
     {
         DownloadManager m(s, 1, 0);
-        auto it = m.add(base + "/old/f.bin", "f.bin", 4, {}, /*start=*/true);
-        auto wait_for = [&](const char* st) {
-            for (int i = 0; i < 300 && it->status != st; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            return it->status == st;
+        auto served = [&] { std::lock_guard<std::mutex> lk(mu); return new_bytes; };
+        // Waits for a status and returns the item as the manager sees it then.
+        auto wait_for = [&](const std::string& id, const char* st) {
+            auto cur = snap(m, id);
+            for (int i = 0; i < 300 && cur->status != st; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                cur = snap(m, id);
+            }
+            return cur;
         };
-        CHECK(wait_for(ST_ERROR));  // the 403s end in "failed", not an endless re-request
+        const std::string fid = m.add(base + "/old/f.bin", "f.bin", 4, {}, /*start=*/true)->id;
+        auto it = wait_for(fid, ST_ERROR);
+        CHECK(it->status == ST_ERROR);  // the 403s end in "failed", not an endless re-request
         CHECK(it->error.find("403") != std::string::npos);
         CHECK(it->downloaded == kHalf);  // first half kept; the error pages wrote nothing
         CHECK(it->dest_path == (fs::path(s.output_dir) / "f.bin").string());  // real target, not the temp copy
 
-        CHECK(m.set_url(it->id, base + "/new/f.bin"));
-        m.resume(it->id);
-        CHECK(wait_for(ST_COMPLETED));
-        CHECK(new_bytes > 0 && new_bytes <= kHalf);  // continued, didn't start over
+        CHECK(m.set_url(fid, base + "/new/f.bin"));
+        m.resume(fid);
+        it = wait_for(fid, ST_COMPLETED);
+        CHECK(it->status == ST_COMPLETED);
+        CHECK(served() > 0 && served() <= kHalf);  // continued, didn't start over
 
         std::string got;
         { std::ifstream f(it->dest_path, std::ios::binary); std::ostringstream o; o << f.rdbuf(); got = o.str(); }
@@ -611,26 +654,48 @@ static void test_retry_new_link() {
         CHECK(got == body);
         CHECK(!fs::exists(fs::path(s.temp_dir) / "f.bin"));
 
+        // The same link pasted in again once the server works: the failed download
+        // carries on (same item, only the missing half fetched), not a second copy.
+        flaky = true;
+        const std::string hid = m.add(base + "/flaky/h.bin", "h.bin", 4, {}, true)->id;
+        auto h = wait_for(hid, ST_ERROR);
+        CHECK(h->downloaded == kHalf);
+        flaky = false;
+        const long long served_before = served();
+        CHECK(m.add(base + "/flaky/h.bin", "h.bin", 4, {}, true)->id == hid);
+        h = wait_for(hid, ST_COMPLETED);
+        CHECK(h->status == ST_COMPLETED);
+        CHECK(served() - served_before > 0 && served() - served_before <= kHalf);
+        CHECK(m.ordered().size() == 2);
+        {
+            std::ifstream f(h->dest_path, std::ios::binary); std::ostringstream o; o << f.rdbuf();
+            CHECK(o.str() == body);
+        }
+
         // The server's file now looks different (ETag v1 -> v2): progress is never
         // dropped silently. "keep" stops with the partial intact (and no auto-retry);
         // "continue" then resumes it; the expected checksum is verified at the end.
+        std::mutex rmu;  // the resolver runs on the download's thread
         std::string choice = "keep";
         int asked = 0;
         ResumeConflict seen;
-        m.set_resume_resolver([&](const ResumeConflict& c) { ++asked; seen = c; return choice; });
-        auto g = m.add(base + "/old/f.bin", "g.bin", 4, {}, true);
-        auto wait_g = [&](const char* st) {
-            for (int i = 0; i < 300 && g->status != st; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            return g->status == st;
-        };
-        CHECK(wait_g(ST_ERROR));
+        m.set_resume_resolver([&](const ResumeConflict& c) {
+            std::lock_guard<std::mutex> lk(rmu); ++asked; seen = c; return choice;
+        });
+        const std::string gid = m.add(base + "/old/f.bin", "g.bin", 4, {}, true)->id;
+        auto g = wait_for(gid, ST_ERROR);
+        CHECK(g->status == ST_ERROR);
         CHECK(g->downloaded == kHalf);
-        CHECK(m.set_url(g->id, base + "/mirror/f.bin"));
-        m.resume(g->id);
+        CHECK(m.set_url(gid, base + "/mirror/f.bin"));
+        m.resume(gid);
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        CHECK(wait_g(ST_ERROR));
-        CHECK(asked == 1);
-        CHECK(seen.have == kHalf && !seen.size_changed);
+        g = wait_for(gid, ST_ERROR);
+        CHECK(g->status == ST_ERROR);
+        {
+            std::lock_guard<std::mutex> lk(rmu);
+            CHECK(asked == 1);
+            CHECK(seen.have == kHalf && !seen.size_changed);
+        }
         CHECK(g->no_auto_retry);
         CHECK(g->error.find("looks different") != std::string::npos);
         CHECK(m.auto_retry_in(*g) < 0);
@@ -642,13 +707,14 @@ static void test_retry_new_link() {
             { std::ofstream f(ref, std::ios::binary); f << body; }
             sum = file_digest(ref, "sha256");
         }
-        CHECK(m.set_expected_hash(g->id, "SHA-256: " + sum));
-        choice = "continue";
-        long long before = new_bytes;
-        m.resume(g->id);
-        CHECK(wait_g(ST_COMPLETED));
-        CHECK(asked == 2);
-        CHECK(new_bytes - before <= kHalf);  // continued from the saved half
+        CHECK(m.set_expected_hash(gid, "SHA-256: " + sum));
+        { std::lock_guard<std::mutex> lk(rmu); choice = "continue"; }
+        long long before = served();
+        m.resume(gid);
+        g = wait_for(gid, ST_COMPLETED);
+        CHECK(g->status == ST_COMPLETED);
+        { std::lock_guard<std::mutex> lk(rmu); CHECK(asked == 2); }
+        CHECK(served() - before <= kHalf);  // continued from the saved half
         CHECK(g->hash_state == "ok");
         {
             std::ifstream f(g->dest_path, std::ios::binary); std::ostringstream o; o << f.rdbuf();
@@ -657,12 +723,63 @@ static void test_retry_new_link() {
 
         // A wrong checksum on a finished file: checked in the background -> failed,
         // and not retried automatically.
-        CHECK(!m.set_expected_hash(g->id, "not-a-checksum"));
-        CHECK(m.set_expected_hash(g->id, std::string(64, '0')));
-        for (int i = 0; i < 200 && g->hash_state != "mismatch"; ++i)
+        CHECK(!m.set_expected_hash(gid, "not-a-checksum"));
+        CHECK(m.set_expected_hash(gid, std::string(64, '0')));
+        for (int i = 0; i < 200 && snap(m, gid)->hash_state != "mismatch"; ++i)
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        g = snap(m, gid);
         CHECK(g->hash_state == "mismatch");
         CHECK(g->status == ST_ERROR && g->no_auto_retry);
+    }
+    svr.stop();
+    th.join();
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+}
+
+// Every connection's thread reports progress, and the UI reads the list every
+// second while that happens. Reports used to run concurrently and the reader saw
+// half-written strings/vectors (heap corruption, 0xc0000374 in the field). Here
+// 8 connections run while another thread keeps reading the list; under
+// ThreadSanitizer this must be race-free, and everywhere the bytes must be exact.
+static void test_concurrent_progress() {
+    auto tmp = (fs::temp_directory_path() / fs::path("mpdm_conc_" + std::to_string(::time(nullptr)))).string();
+    fs::create_directories(tmp);
+    set_home(tmp);
+
+    const long long kSize = 4 * 1024 * 1024;
+    std::string body(static_cast<size_t>(kSize), '\0');
+    for (long long i = 0; i < kSize; ++i) body[static_cast<size_t>(i)] = static_cast<char>((i * 31 + 3) % 253);
+    httplib::Server svr;
+    svr.Get("/big.bin", [&](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Accept-Ranges", "bytes");
+        res.set_content(body, "application/octet-stream");
+    });
+    int port = svr.bind_to_any_port("127.0.0.1");
+    std::thread th([&] { svr.listen_after_bind(); });
+
+    Settings s;
+    s.output_dir = (fs::path(tmp) / "out").string();
+    s.categorize = false;
+    s.connections = 8;
+    s.min_segment_size = 64 * 1024;
+    s.max_rate_bps = 4 * 1024 * 1024;  // ~1 s, so plenty of progress reports
+    {
+        DownloadManager m(s, 1, 0);
+        const std::string id = m.add("http://127.0.0.1:" + std::to_string(port) + "/big.bin", "big.bin", 8)->id;
+        std::shared_ptr<DownloadItem> cur;
+        size_t lanes = 0, chars = 0;
+        for (int i = 0; i < 1500; ++i) {  // read like the UI does, only much more often
+            cur = snap(m, id);
+            lanes += cur->conn_stats.size();
+            chars += cur->dest_path.size() + cur->filename.size() + cur->status.size() + cur->error.size();
+            if (cur->status == ST_COMPLETED || cur->status == ST_ERROR) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        CHECK(cur->status == ST_COMPLETED);
+        CHECK(lanes > 0 && chars > 0);
+        std::ifstream f(cur->dest_path, std::ios::binary); std::ostringstream o; o << f.rdbuf();
+        CHECK(o.str() == body);
     }
     svr.stop();
     th.join();
@@ -737,8 +854,7 @@ static void test_auto_retry_and_resume_on_start() {
         }
         CHECK(queued == 2);
         CHECK(m.resume_interrupted() == 0);  // only once per run
-        for (auto& it : m.ordered()) if (it->status == ST_QUEUED) it->status = ST_DOWNLOADING;
-        m.save();
+        m.save();  // still queued (no slots): loads back as interrupted
     }
     {
         Settings off = s;
@@ -771,6 +887,7 @@ int main() {
     test_scheduler();
     test_manager_persistence();
     test_retry_new_link();
+    test_concurrent_progress();
     if (g_failures == 0) {
         std::cout << "all C++ backend tests passed\n";
         return 0;

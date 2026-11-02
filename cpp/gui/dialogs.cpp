@@ -1392,6 +1392,8 @@ connection.</li>
 continues from where it stopped), <span class="k">New link&hellip;</span> when the old link
 expired, <span class="k">Checksum&hellip;</span> to paste the checksum a website publishes
 (MPDM checks the finished file against it), open its folder or copy its link.</li>
+<li>Adding a link that's already in the list and unfinished (pasted again, or clicked again
+in the browser) continues that download instead of starting a second copy.</li>
 <li>If a download's saved progress no longer matches the file on the server, MPDM asks
 before throwing it away: <span class="k">Continue</span> (same file, e.g. a mirror),
 <span class="k">Start over</span>, or <span class="k">Keep for now</span>.</li>

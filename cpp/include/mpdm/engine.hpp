@@ -103,6 +103,7 @@ private:
 
     std::mutex mu_;        // guards segment state, claimed_, active_, counters
     std::mutex file_mu_;   // guards positioned writes to file_
+    std::mutex emit_mu_;   // one progress report at a time (guards last_emit_, cb_ calls)
     std::fstream file_;
     std::atomic<bool> pause_{false};
     std::atomic<bool> cancel_{false};

@@ -18,6 +18,16 @@
 #include <cstdlib>
 #include <cstring>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #include "mainwindow.hpp"
 
 int main(int argc, char** argv) {
@@ -69,18 +79,41 @@ int main(int argc, char** argv) {
 
     // Single instance: the native host launches the app for each browser download;
     // if one is already running it adopts the dropped job (jobs/) itself, so a
-    // second launch just exits. (Screenshot/dev runs skip this.)
+    // second launch just exits. Opened by the user (Start menu, desktop icon) while
+    // it sits in the tray, it asks the running copy to show its window first.
+    // (Screenshot/dev runs skip this.)
     const QString sockName = "mpdm_gui_singleton";
+    QLocalServer* server = nullptr;
     if (!isShot) {
         QLocalSocket probe;
         probe.connectToServer(sockName);
-        if (probe.waitForConnected(200)) { probe.disconnectFromServer(); return 0; }
+        if (probe.waitForConnected(500)) {
+            if (!background) {
+#ifdef _WIN32
+                AllowSetForegroundWindow(ASFW_ANY);  // let the running copy come to the front
+#endif
+                probe.write("show\n");
+                probe.waitForBytesWritten(500);
+            }
+            probe.disconnectFromServer();
+            return 0;
+        }
         QLocalServer::removeServer(sockName);
-        auto* server = new QLocalServer(&app);
+        server = new QLocalServer(&app);
         server->listen(sockName);  // held for the app's lifetime
     }
 
     mpdm::gui::MainWindow w;
+    if (server) {
+        QObject::connect(server, &QLocalServer::newConnection, &w, [server, &w] {
+            while (QLocalSocket* s = server->nextPendingConnection()) {
+                auto handle = [s, &w] { if (s->readAll().contains("show")) w.showFromTray(); };
+                QObject::connect(s, &QLocalSocket::readyRead, &w, handle);
+                QObject::connect(s, &QLocalSocket::disconnected, &w, [s, handle] { handle(); s->deleteLater(); });
+                if (s->bytesAvailable()) handle();
+            }
+        });
+    }
     // Dev renders end with qApp->quit(); let the window close instead of hiding to
     // the tray, or Qt 6 cancels that quit and the run never exits.
     if (isShot) w.allowQuit();

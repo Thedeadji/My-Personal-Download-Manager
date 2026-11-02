@@ -290,11 +290,18 @@ void DownloadManager::load() {
 
 // ---- listing --------------------------------------------------------------
 std::vector<std::shared_ptr<DownloadItem>> DownloadManager::ordered() {
+    // Copies, taken under the lock: download threads keep updating the live items,
+    // and reading those directly from another thread (the UI, every second)
+    // races with them and can corrupt the heap.
     std::lock_guard<std::recursive_mutex> lk(mu_);
     std::vector<std::shared_ptr<DownloadItem>> out;
+    out.reserve(order_.size());
     for (const auto& id : order_) {
         auto it = items_.find(id);
-        if (it != items_.end()) out.push_back(it->second);
+        if (it == items_.end()) continue;
+        auto copy = std::make_shared<DownloadItem>(*it->second);
+        copy->dl = nullptr;  // the engine handle stays with the live item
+        out.push_back(std::move(copy));
     }
     return out;
 }
@@ -326,6 +333,20 @@ std::shared_ptr<DownloadItem> DownloadManager::add(const std::string& url, const
     size_t a = it->url.find_first_not_of(" \t\r\n");
     size_t b = it->url.find_last_not_of(" \t\r\n");
     it->url = (a == std::string::npos) ? "" : it->url.substr(a, b - a + 1);
+
+    // The same link again (e.g. pasted back in after it failed): continue that
+    // download from its saved progress rather than starting a second copy of it.
+    std::shared_ptr<DownloadItem> same;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        same = reuse_unfinished(it->url, incognito, headers);
+    }
+    if (same) {
+        if (start) resume(same->id);  // no-op if it's already queued/running
+        else save();
+        return same;
+    }
+
     it->filename = filename;
     it->connections = connections;
     it->max_rate_bps = max_rate_bps > 0 ? max_rate_bps : 0;
@@ -342,6 +363,22 @@ std::shared_ptr<DownloadItem> DownloadManager::add(const std::string& url, const
     save();
     if (start) pump();
     return it;
+}
+
+std::shared_ptr<DownloadItem> DownloadManager::reuse_unfinished(const std::string& url, bool incognito,
+                                                                std::map<std::string, std::string>& headers) {
+    // caller holds mu_
+    if (url.empty()) return nullptr;
+    for (const auto& id : order_) {
+        auto f = items_.find(id);
+        if (f == items_.end()) continue;
+        auto& ex = f->second;
+        if (ex->url != url || ex->incognito != incognito || ex->status == ST_COMPLETED) continue;
+        // A browser sends fresh cookies/referer with the link: use them on the retry.
+        if (!headers.empty() && !ex->dl) ex->headers = std::move(headers);
+        return ex;
+    }
+    return nullptr;
 }
 
 std::vector<std::shared_ptr<DownloadItem>> DownloadManager::add_batch(const std::string& text,
@@ -374,6 +411,10 @@ void DownloadManager::pump() {
 }
 
 void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
+    // This thread updates `item` while the UIs read the list (ordered() copies it
+    // under mu_), so every change to the item is made holding mu_. The slow parts
+    // (the download itself, hashing) run without it.
+    std::unique_lock<std::recursive_mutex> lk(mu_);
     Settings s = settings;
     if (item->connections) s.connections = item->connections;
     if (item->max_rate_bps) s.max_rate_bps = item->max_rate_bps;
@@ -401,27 +442,37 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
         }
         item->dest_path = out;
         item->filename = fs::path(out).filename().string();
-        GrabProgressCb gcb = [item](int done, int total) {
+        const std::string url = item->url;
+        lk.unlock();
+        GrabProgressCb gcb = [this, item](int done, int total) {
+            std::lock_guard<std::recursive_mutex> g(mu_);
             item->seg_done = done; item->seg_total = total;
             item->downloaded = done; if (total) item->size = total;
         };
+        bool ok = false;
         try {
-            std::string path = grab(item->url, out, s, "auto", "best", gcb);
+            std::string path = grab(url, out, s, "auto", "best", gcb);
+            std::lock_guard<std::recursive_mutex> g(mu_);
             item->dest_path = path;
             item->speed = 0; item->eta = 0;
-            if (verify_hash(*item)) {
-                item->status = ST_COMPLETED;
-                item->failed_since = item->failed_at = 0;
-            }
+            ok = true;
         } catch (const std::exception& e) {
+            std::lock_guard<std::recursive_mutex> g(mu_);
             mark_failed(*item, e.what());
         }
-        item->dl = nullptr;
+        if (ok && verify_hash(item)) {
+            std::lock_guard<std::recursive_mutex> g(mu_);
+            item->status = ST_COMPLETED;
+            item->failed_since = item->failed_at = 0;
+        }
+        { std::lock_guard<std::recursive_mutex> g(mu_); item->dl = nullptr; }
         save(); pump(); maybe_on_complete();
         return;
     }
 
-    auto cb = [item](const Progress& p) {
+    // Called by the engine (one report at a time) from its connection threads.
+    auto cb = [this, item](const Progress& p) {
+        std::lock_guard<std::recursive_mutex> g(mu_);
         item->downloaded = p.downloaded;
         if (p.total) item->size = *p.total;
         item->speed = p.speed_bps;
@@ -444,13 +495,41 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
     if (duplicate_resolver_) dl->set_duplicate_resolver(duplicate_resolver_);
     if (resume_resolver_) dl->set_resume_resolver(resume_resolver_);
     item->dl = dl;
+    lk.unlock();  // never held across start(): it can wait on a UI prompt
+    std::string path;
+    bool ok = false;
     try {
-        std::string path = dl->start();
-        item->dest_path = path;
-        item->filename = fs::path(path).filename().string();
-        item->speed = 0;
-        item->eta = 0;
-        const bool good = verify_hash(*item);  // (still "downloading" while it hashes)
+        path = dl->start();
+        ok = true;
+    } catch (const ResumeConflictError& e) {
+        std::lock_guard<std::recursive_mutex> g(mu_);
+        mark_failed(*item, e.what(), /*no_auto_retry=*/true);  // the user chose to stop
+    } catch (const DownloadError& e) {
+        std::string msg = e.what();
+        std::lock_guard<std::recursive_mutex> g(mu_);
+        if (msg.find("paused") != std::string::npos) {
+            item->status = ST_PAUSED;
+            item->speed = 0;
+        } else if (msg.find("cancelled") != std::string::npos) {
+            item->dl = nullptr;
+            return;  // removed — don't touch
+        } else {
+            mark_failed(*item, msg);
+        }
+    } catch (const std::exception& e) {
+        std::lock_guard<std::recursive_mutex> g(mu_);
+        mark_failed(*item, e.what());
+    }
+    if (ok) {
+        {
+            std::lock_guard<std::recursive_mutex> g(mu_);
+            item->dest_path = path;
+            item->filename = fs::path(path).filename().string();
+            item->speed = 0;
+            item->eta = 0;
+        }
+        const bool good = verify_hash(item);  // (still "downloading" while it hashes)
+        std::lock_guard<std::recursive_mutex> g(mu_);
         if (good) {
             item->status = ST_COMPLETED;
             item->failed_since = item->failed_at = 0;
@@ -469,23 +548,8 @@ void DownloadManager::run(std::shared_ptr<DownloadItem> item) {
                 }
             }
         }
-    } catch (const ResumeConflictError& e) {
-        mark_failed(*item, e.what(), /*no_auto_retry=*/true);  // the user chose to stop
-    } catch (const DownloadError& e) {
-        std::string msg = e.what();
-        if (msg.find("paused") != std::string::npos) {
-            item->status = ST_PAUSED;
-            item->speed = 0;
-        } else if (msg.find("cancelled") != std::string::npos) {
-            item->dl = nullptr;
-            return;  // removed — don't touch
-        } else {
-            mark_failed(*item, msg);
-        }
-    } catch (const std::exception& e) {
-        mark_failed(*item, e.what());
     }
-    item->dl = nullptr;
+    { std::lock_guard<std::recursive_mutex> g(mu_); item->dl = nullptr; }
     save();
     pump();
     maybe_on_complete();
@@ -522,7 +586,7 @@ void DownloadManager::resume(const std::string& id) {
     pump();
 }
 
-void DownloadManager::mark_failed(DownloadItem& it, const std::string& msg, bool no_auto_retry) {
+void DownloadManager::mark_failed(DownloadItem& it, const std::string& msg, bool no_auto_retry) {  // caller holds mu_
     const double now = now_epoch();
     it.status = ST_ERROR;
     it.error = msg;
@@ -536,21 +600,28 @@ static std::string mismatch_message(const std::string& algo) {
     return checksum_label(algo) + " checksum doesn't match: the file is damaged or isn't the expected one";
 }
 
-bool DownloadManager::verify_hash(DownloadItem& it) {
-    Checksum want = parse_checksum(it.expected_hash);
-    if (!want.valid()) return true;
-    it.hash_state = "checking";
-    std::string got = file_digest(it.dest_path, want.algo, &shutting_);
+bool DownloadManager::verify_hash(const std::shared_ptr<DownloadItem>& item) {
+    Checksum want;
+    std::string path;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        want = parse_checksum(item->expected_hash);
+        if (!want.valid()) return true;
+        item->hash_state = "checking";
+        path = item->dest_path;
+    }
+    std::string got = file_digest(path, want.algo, &shutting_);  // (unlocked: large files take a while)
+    std::lock_guard<std::recursive_mutex> lk(mu_);
     if (got.empty()) {  // unreadable, or the app is closing: leave it unchecked
-        it.hash_state.clear();
+        item->hash_state.clear();
         return true;
     }
     if (got == want.hex) {
-        it.hash_state = "ok";
+        item->hash_state = "ok";
         return true;
     }
-    it.hash_state = "mismatch";
-    mark_failed(it, mismatch_message(want.algo), /*no_auto_retry=*/true);
+    item->hash_state = "mismatch";
+    mark_failed(*item, mismatch_message(want.algo), /*no_auto_retry=*/true);
     return false;
 }
 
@@ -568,8 +639,8 @@ bool DownloadManager::set_expected_hash(const std::string& id, const std::string
         // Already finished: check the file on disk now, off the caller's thread.
         if (!clear && item->status == ST_COMPLETED && !item->dest_path.empty() && !shutting_) {
             item->hash_state = "checking";
-            threads_.emplace_back([this, item, c] {
-                std::string got = file_digest(item->dest_path, c.algo, &shutting_);
+            threads_.emplace_back([this, item, c, path = item->dest_path] {
+                std::string got = file_digest(path, c.algo, &shutting_);
                 {
                     std::lock_guard<std::recursive_mutex> lk2(mu_);
                     if (got.empty()) item->hash_state.clear();
@@ -641,7 +712,7 @@ void DownloadManager::delete_files(const std::string& dest_path) {
 
 void DownloadManager::remove(const std::string& id, bool delete_file) {
     std::shared_ptr<DownloadItem> item;
-    bool active = false;
+    bool active = false, purge = false;
     {
         std::lock_guard<std::recursive_mutex> lk(mu_);
         auto it = items_.find(id);
@@ -649,15 +720,17 @@ void DownloadManager::remove(const std::string& id, bool delete_file) {
         item = it->second;
         active = (item->status == ST_DOWNLOADING && item->dl != nullptr);
         if (active) item->dl->cancel();
+        purge = (delete_file || item->incognito) && !item->dest_path.empty();
         items_.erase(it);
         order_.erase(std::remove(order_.begin(), order_.end(), id), order_.end());
     }
-    if ((delete_file || item->incognito) && !item->dest_path.empty()) {
+    if (purge) {
         if (active) {
             std::thread([this, item] {
-                for (int i = 0; i < 60 && item->dl != nullptr; ++i)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                delete_files(item->dest_path);
+                wait_dl_release(item);
+                std::string path;
+                { std::lock_guard<std::recursive_mutex> lk(mu_); path = item->dest_path; }
+                delete_files(path);
             }).detach();
         } else {
             delete_files(item->dest_path);
@@ -828,22 +901,35 @@ void DownloadManager::sweep_incognito() {
 }
 
 void DownloadManager::wait_dl_release(const std::shared_ptr<DownloadItem>& it) {
-    for (int i = 0; i < 60 && it->dl != nullptr; ++i)
+    for (int i = 0; i < 60; ++i) {
+        { std::lock_guard<std::recursive_mutex> lk(mu_); if (!it->dl) return; }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 }
 
 void DownloadManager::purge_incognito_incomplete() {
-    for (auto& it : ordered()) {
-        if (!it->incognito || it->status == ST_COMPLETED) continue;
-        bool active = (it->status == ST_DOWNLOADING && it->dl != nullptr);
-        if (active) it->dl->cancel();
+    std::vector<std::shared_ptr<DownloadItem>> live;  // the real items (ordered() gives copies)
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        for (const auto& id : order_) {
+            auto f = items_.find(id);
+            if (f != items_.end()) live.push_back(f->second);
+        }
+    }
+    for (auto& it : live) {
+        bool active = false;
         {
             std::lock_guard<std::recursive_mutex> lk(mu_);
+            if (!it->incognito || it->status == ST_COMPLETED) continue;
+            active = (it->status == ST_DOWNLOADING && it->dl != nullptr);
+            if (active) it->dl->cancel();
             items_.erase(it->id);
             order_.erase(std::remove(order_.begin(), order_.end(), it->id), order_.end());
         }
         if (active) wait_dl_release(it);
-        delete_files(it->dest_path);
+        std::string path;
+        { std::lock_guard<std::recursive_mutex> lk(mu_); path = it->dest_path; }
+        delete_files(path);
     }
     save();
 }
@@ -881,6 +967,18 @@ std::vector<std::string> DownloadManager::ingest_jobs() {
         bool incognito = j.value("incognito", false);
         long long rate = 0;
         if (j.contains("rate") && j["rate"].is_number()) rate = j["rate"].get<long long>();
+        // Already in the list and not finished (e.g. it failed and the user clicked
+        // the link again): continue it where its progress is, in its own folder.
+        std::shared_ptr<DownloadItem> same;
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            same = reuse_unfinished(url, incognito, headers);
+        }
+        if (same) {
+            resume(same->id);
+            ids.push_back(same->id);
+            continue;
+        }
         // Add paused so per-item overrides are set before the worker thread reads
         // them (run() snapshots settings at the top), then pump once below.
         auto item = add(url, filename, conns, std::move(headers), /*start=*/false, rate, incognito, stream);
